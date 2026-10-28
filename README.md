@@ -132,7 +132,7 @@ faltar energia — que é o motivo de existir de um nobreak.
 | Dispositivo some e reaparece no `lsusb` | Firmware travado (crash-loop de driver antigo) | `bash install.sh --unwedge` (ciclo "authorized" via sysfs) ou replug físico; depois use a config do kit |
 | `Input/Output Error` no NUT | Varredura de langid ou transporte errado | `ups.conf` do kit: `subdriver=hunnox`, `protocol=q1`, `langid_fix=0x0409`, `noscanlangid` |
 | Frequência sempre 50,0 Hz (num país 60 Hz) | O firmware **mente** — reporta 50,0 fixo | Ignore o valor; é um defeito conhecido do firmware, não do driver |
-| `battery.voltage: 2.22` parece errado | O firmware reporta tensão **por célula** (2,22 V = float de chumbo-ácido por célula) | Bateria de 12 V = 6 células: `battery.packs = 6` no `ups.conf` (o driver multiplica) |
+| `battery.voltage: 2.22` parece errado | O firmware reporta tensão **por célula** (2,22 V = float de chumbo-ácido por célula) | Bateria de 12 V = 6 células: `override.battery.packs = 6` + `battery_voltage_reports_one_pack` no `ups.conf` (o driver multiplica) |
 | NUT volta a travar depois de um tempo | Config antiga sem `subdriver=hunnox` — o transporte errado derruba o firmware | Use a config do kit: com hunnox, `pollinterval = 2` é seguro e mantém os valores acordados (~1 Hz, como o UPSmart) |
 
 **Importante:** nunca envie os índices de string `0x68`/`0x69` para o chip —

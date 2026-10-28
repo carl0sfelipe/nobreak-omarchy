@@ -129,7 +129,7 @@ goes out — which is the point of owning a UPS.
 | Device vanishes from `lsusb` | Wedged firmware (old driver crash-loop) | `bash install.sh --unwedge` (sysfs "authorized" cycle) or physical replug; then use the kit config |
 | `Input/Output Error` in NUT | langid scanning or wrong transport | Kit `ups.conf`: `subdriver=hunnox`, `protocol=q1`, `langid_fix=0x0409`, `noscanlangid` |
 | Frequency always 50.0 Hz (in a 60 Hz country) | The firmware **lies** — it reports a fixed 50.0 | Ignore the value; known firmware defect, not a driver bug |
-| `battery.voltage: 2.22` looks wrong | Firmware reports **per-cell** voltage (2.22 V = lead-acid float per cell) | 12 V battery = 6 cells: set `battery.packs = 6` in `ups.conf` (the driver multiplies) |
+| `battery.voltage: 2.22` looks wrong | Firmware reports **per-cell** voltage (2.22 V = lead-acid float per cell) | 12 V battery = 6 cells: set `override.battery.packs = 6` + `battery_voltage_reports_one_pack` in `ups.conf` (the driver multiplies) |
 | NUT wedges it again later | Old config without `subdriver=hunnox` — the wrong transport crashes the firmware | Use the kit config: with hunnox, `pollinterval = 2` is safe and keeps values alive (~1 Hz, like UPSmart) |
 
 **Important:** never send string indices `0x68`/`0x69` to the chip — they

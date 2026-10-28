@@ -202,7 +202,7 @@ upsconf_section_text() {
     printf '    langid_fix = 0x0409\n'
     printf '    noscanlangid\n'
     printf '    pollinterval = 2\n'
-    printf '    battery.packs = %s\n' "$packs"
+    printf '    override.battery.packs = %s\n    battery_voltage_reports_one_pack\n' "$packs"
 }
 
 # upsconf_without_section ARQUIVO SECAO — reimprime o arquivo sem a seção
