@@ -1,0 +1,8 @@
+[Unit]
+Description=nobreak-omarchy autoheal — software USB replug of the UPS when NUT has no data
+After=nut-driver.target
+[Service]
+Type=oneshot
+# NOBREAK_VIDPID / NOBREAK_UPS / NOBREAK_NUT_UNIT (written by install.sh --driver)
+EnvironmentFile=-/etc/nobreak-omarchy/autoheal.env
+ExecStart=/usr/local/sbin/nobreak-autoheal

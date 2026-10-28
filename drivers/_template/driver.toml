@@ -1,0 +1,12 @@
+# nobreak-omarchy driver metadata — copy this directory to drivers/<name>/
+# and fill every field. install.sh --driver <name> reads this file.
+name = "mydriver"                 # = directory name; lowercase, [a-z0-9_-]
+description = "Brand/model or chip, and the brands where it is found"
+vid_pid = "0000:0000"             # from `lsusb`, e.g. "0665:5161"
+usb_product = ""                  # iProduct string, if useful for matching
+nut_driver = "nutdrv_qx"          # NUT driver used in nut/ups.conf; "" if standalone-only
+ups_name = "nobreak"              # default NUT section name
+autoheal = false                  # true only after you verified a software replug recovers it
+modes = ["nut"]                   # add "standalone"/"mqtt" if you ship driver.py + systemd units
+status = "untested"               # e.g. "tested live YYYY-MM-DD: on-battery telemetry verified"
+maintainer = "your-github-handle"

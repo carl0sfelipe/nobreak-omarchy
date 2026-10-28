@@ -1,41 +1,42 @@
 #!/usr/bin/env python3
 """
-mec0003.py (v2) — driver standalone para nobreaks com chip USB genérico
-MEC0003 (VID:PID 0001:0000, "Fry's Electronics" no lsusb — marcas SMS, NHS,
-Powercool, Hunnox, DEXP, Eurocase etc.)
+driver.py (v2) — nobreak-omarchy driver for UPSes with the generic MEC0003
+USB chip (VID:PID 0001:0000, "Fry's Electronics" in lsusb — brands SMS, NHS,
+Powercool, Hunnox, DEXP, Eurocase etc.). Standalone: works without NUT.
 
-Protocolo documentado a partir de:
-  * engenharia reversa do cliente Windows UPSmart (modo "MEGA(USB)") refletida
-    nos subdrivers hunnox/krauler/fabula do NUT (nutdrv_qx.c)
-  * issues networkupstools/nut#1539 e #2208 (comportamento do firmware)
-  * smsUps/nobreakSMS (protocolo binário serial SMS para o modo serial)
-  * capturas ao vivo em hardware real (2026-10-28) — ver tests/frames/
+Protocol documented from:
+  * reverse engineering of the UPSmart Windows client ("MEGA(USB)" mode) as
+    reflected in NUT's hunnox/krauler/fabula subdrivers (nutdrv_qx.c)
+  * issues networkupstools/nut#1539 and #2208 (firmware behavior)
+  * smsUps/nobreakSMS (SMS binary serial protocol, for the serial mode)
+  * live captures on real hardware (2026-10-28) — see tests/frames/
 
-Idiossincrasias de firmware (aprendidas com hardware real — RESPEITAR):
-  * battery_voltage do Q1 vem POR CÉLULA (~2,22 V em flutuação): multiplicar
-    pelo número de elementos da bateria — 6 para bateria de 12 V,
-    12 para bateria de 24 V.
-  * alguns firmwares reportam frequência de entrada FIXA em 50.0 Hz
-    (ignorar o valor para lógica de decisão, é cosmético).
-  * após replug / ciclo USB o dispositivo responde ZEROS até o lock-step de
-    aquecimento completar: pollar a ~1 Hz por alguns segundos até os
-    valores ficarem vivos (o aquecimento já roda no StringChannel, mas as
-    primeiras leituras seguintes ainda podem vir zeradas).
+Firmware quirks (learned on real hardware — RESPECT THEM):
+  * Q1 battery_voltage is PER CELL (~2.22 V on float): multiply by the
+    number of cells — 6 for a 12 V battery, 12 for a 24 V battery.
+  * some firmwares report a FIXED 50.0 Hz input frequency
+    (ignore it for decisions, it is cosmetic).
+  * after a replug / USB cycle the device answers ZEROS until the warm-up
+    lock-step completes: poll at ~1 Hz for a few seconds until values come
+    alive (StringChannel already does the warm-up, but the next few reads
+    may still be zeros).
+  * never run this driver while NUT is talking to the chip: concurrent
+    access (or a standalone BL/I/F query) wedges the firmware.
 
-Métodos de acesso (o auto tenta nesta ordem):
-  1. string    — comandos embarcados em GET_DESCRIPTOR(String): o índice da
-                 string É o opcode (Q1=0x03, F=0x0d, I=0x0c, BL=0xf3...),
-                 langid fixo 0x0409, wLength no máx 102 (maior trava o chip).
-  2. setreport — túnel HID: comando ASCII em report de saída de 8 bytes via
-                 SET_REPORT (0x21/0x09/0x0200), resposta no endpoint 0x81.
-  3. serial    — protocolo binário SMS 2400 8N1 (7 bytes cmd / 18 bytes
-                 resposta) em /dev/ttyUSB*, se o cabo criar porta serial.
+Access methods (auto tries in this order):
+  1. string    — commands embedded in GET_DESCRIPTOR(String): the string
+                 index IS the opcode (Q1=0x03, F=0x0d, I=0x0c, BL=0xf3...),
+                 fixed langid 0x0409, wLength at most 102 (larger wedges it).
+  2. setreport — HID tunnel: ASCII command in an 8-byte output report via
+                 SET_REPORT (0x21/0x09/0x0200), answer on endpoint 0x81.
+  3. serial    — SMS binary protocol 2400 8N1 (7-byte cmd / 18-byte
+                 answer) on /dev/ttyUSB*, if the cable creates a serial port.
 
-Dependências (extras opcionais não são obrigatórias para o uso básico):
-  pip install pyusb pyserial hidapi     # núcleo (ver requirements.txt)
-  pip install paho-mqtt                 # só para --mqtt / --daemon com MQTT
+Dependencies (optional extras are not needed for basic use):
+  pip install pyusb pyserial hidapi     # core (see requirements.txt)
+  pip install paho-mqtt                 # only for --mqtt / --daemon with MQTT
 
-Saídas: 0 ok, 1 erro de dispositivo/protocolo, 2 dependência opcional ausente.
+Exit codes: 0 ok, 1 device/protocol error, 2 optional dependency missing.
 """
 
 import argparse
@@ -50,42 +51,42 @@ __version__ = "2.0.0"
 
 VID = 0x0001
 PID = 0x0000
-LANGID = 0x0409          # langid fixo: a negociação padrão trava o firmware
-MAX_STRING_LEN = 102     # wLength > 102 trava o chip (medido do cliente Windows)
+LANGID = 0x0409          # fixed langid: default negotiation wedges the firmware
+MAX_STRING_LEN = 102     # wLength > 102 wedges the chip (measured from the Windows client)
 
 
 class UpsError(Exception):
-    """Erro de dispositivo/protocolo (código de saída 1)."""
+    """Device/protocol error (exit code 1)."""
 
 
 class MissingDependency(Exception):
-    """Dependência opcional ausente, ex.: paho-mqtt (código de saída 2)."""
+    """Optional dependency missing, e.g. paho-mqtt (exit code 2)."""
 
 
 # ---------------------------------------------------------------------------
-# Camada 1 — canais de comando (detalhes de protocolo são SAGRADOS,
-# reverse-engineered e verificados contra hardware real — não mexer nos bytes)
+# Layer 1 — command channels (protocol details are SACRED: reverse-engineered
+# and verified against real hardware — do not touch the bytes)
 # ---------------------------------------------------------------------------
 
-# ---------- Método "string" (modo MEGA(USB) do UPSmart / hunnox-krauler) ----
+# ---------- "string" method (UPSmart MEGA(USB) mode / hunnox-krauler) -------
 
-# Índice de string = opcode do comando Megatec
+# String index = Megatec command opcode
 STRING_INDEX = {
-    "Q1": 0x03,   # status completo (ASCII "(226.0 195.0 ...")
-    "F":  0x0d,   # nominal
-    "I":  0x0c,   # fabricante/modelo/firmware
-    "Q":  0x07,   # alterna o bip
-    "C":  0x0a,   # cancela desligamento
-    "T":  0x04,   # teste de bateria (10 s)
-    "TL": 0x05,   # teste até bater baixa
-    "BL": 0xf3,   # carga da bateria em % (dialeto hunnox)
+    "Q1": 0x03,   # full status (ASCII "(226.0 195.0 ...")
+    "F":  0x0d,   # ratings
+    "I":  0x0c,   # manufacturer/model/firmware
+    "Q":  0x07,   # toggles the beeper
+    "C":  0x0a,   # cancels shutdown
+    "T":  0x04,   # battery test (10 s)
+    "TL": 0x05,   # test until battery low
+    "BL": 0xf3,   # battery charge in % (hunnox dialect)
 }
-# 0x68/0x69 existem na tabela krauler mas causam desligamento — nunca usar.
+# 0x68/0x69 exist in the krauler table but shut the UPS down — never use.
 FORBIDDEN_INDEXES = {0x68, 0x69}
 
 
 class StringChannel:
-    """Comandos Megatec tunelados em descritores de string USB."""
+    """Megatec commands tunneled in USB string descriptors."""
 
     name = "string"
     needs_usb = True
@@ -93,8 +94,8 @@ class StringChannel:
     def __init__(self, dev):
         self.dev = dev
         self.warmed = False
-        self.step = 1          # lock-step do UPSmart: intercala F/Q1/I
-        # aquecimento: sem isso o firmware responde zeros (NUT#2208)
+        self.step = 1          # UPSmart lock-step: interleaves F/Q1/I
+        # warm-up: without it the firmware answers zeros (NUT#2208)
         for _ in range(2):
             self._raw_string(0x00, 1026, required=False)
         self._raw_string(0x01, 1026, required=False)
@@ -106,26 +107,26 @@ class StringChannel:
                                    LANGID, wlength, 5000)
         if r is None or len(r) == 0:
             if required:
-                raise UpsError(f"string 0x{index:02x}: sem resposta")
+                raise UpsError(f"string 0x{index:02x}: no answer")
             return b""
         return bytes(r)
 
     def _get_string(self, index):
         if index in FORBIDDEN_INDEXES:
-            raise UpsError(f"índice 0x{index:02x} é perigoso (desliga o nobreak)")
+            raise UpsError(f"index 0x{index:02x} is dangerous (shuts the UPS down)")
         raw = self._raw_string(index, MAX_STRING_LEN)
         if len(raw) < 2 or raw[1] != 0x03:
-            raise UpsError(f"string 0x{index:02x}: descritor inválido "
+            raise UpsError(f"string 0x{index:02x}: invalid descriptor "
                            f"{raw[:4].hex()}")
         if raw[0] != len(raw):
-            raise UpsError(f"string 0x{index:02x}: tamanho divergente "
+            raise UpsError(f"string 0x{index:02x}: length mismatch "
                            f"({raw[0]} != {len(raw)})")
-        # UTF-16LE -> ASCII (1 byte a cada 2, a partir do offset 2)
+        # UTF-16LE -> ASCII (1 byte out of every 2, from offset 2)
         return raw[2:raw[0]:2].decode("ascii", "replace").rstrip("\r\n\x00")
 
     def _dummy(self, asking_index):
-        # o UPSmart intercala leituras F/Q1/I entre comandos reais para
-        # manter os valores vivos; pulamos a que estamos pedindo de verdade
+        # UPSmart interleaves F/Q1/I reads between real commands to keep
+        # the values alive; we skip the one we are actually asking for
         for idx in (0x0d, 0x03, 0x0c):
             if idx != asking_index:
                 try:
@@ -141,10 +142,10 @@ class StringChannel:
         return self._get_string(idx)
 
 
-# ---------- Método "setreport" (túnel HID clássico Megatec/cypress) --------
+# ---------- "setreport" method (classic Megatec/cypress HID tunnel) --------
 
 class SetReportChannel:
-    """Comando ASCII em report de 8 bytes via SET_REPORT; resposta no EP 0x81."""
+    """ASCII command in an 8-byte report via SET_REPORT; answer on EP 0x81."""
 
     name = "setreport"
     needs_usb = True
@@ -174,25 +175,25 @@ class SetReportChannel:
         return s
 
 
-# ---------- Método "serial" (protocolo binário SMS) -------------------------
+# ---------- "serial" method (SMS binary protocol) ---------------------------
 
 def sms_checksum(body):
-    """Checksum aditivo do protocolo SMS: (0x100 - soma(bytes)) & 0xFF.
+    """Additive checksum of the SMS protocol: (0x100 - sum(bytes)) & 0xFF.
 
-    `body` são os 5 primeiros bytes do pacote (letra + 4 args); o pacote
-    completo tem 7 bytes: body + checksum + 0x0D (ver docs/PROTOCOLO.md §1.2).
+    `body` is the first 5 bytes of the packet (letter + 4 args); the full
+    packet has 7 bytes: body + checksum + 0x0D (see PROTOCOL.md §1.2).
     """
     return (0x100 - (sum(body) & 0xFF)) & 0xFF
 
 
 def build_sms_frame(cmd, args_bytes=b"\xff\xff\xff\xff"):
-    """Monta pacote de 7 bytes: [cmd][4 args][checksum][0x0D]."""
+    """Builds a 7-byte packet: [cmd][4 args][checksum][0x0D]."""
     body = bytes([cmd]) + bytes(args_bytes)
     return body + bytes([sms_checksum(body), 0x0D])
 
 
-# Bytes literais mantidos da v1 (verificados em hardware; o --selftest
-# confere que continuam idênticos ao recalculados por build_sms_frame).
+# Literal bytes kept from v1 (verified on hardware; --selftest checks they
+# are still identical to the ones recomputed by build_sms_frame).
 SMS_CMDS = {
     "Q":  bytes.fromhex("51 ff ff ff ff b3 0d"),
     "I":  bytes.fromhex("49 ff ff ff ff bb 0d"),
@@ -201,20 +202,20 @@ SMS_CMDS = {
 
 
 def parse_sms_status(raw):
-    """Parser da resposta de 18 bytes do comando Q (protocolo binário SMS).
+    """Parser for the 18-byte answer of the Q command (SMS binary protocol).
 
-    Layout documentado em docs/PROTOCOLO.md §1.4 (capturas reais):
-    offset 1-14 são 7 u16 big-endian ÷ 10; offset 15 = bits de estado;
-    offset 17 = terminador 0x0D. Bits de estado: bit0 beep, bit6 bateria
-    baixa, bit7 em bateria (0x09 = normal, 0x89 = fora da tomada).
+    Layout documented in PROTOCOL.md §1.4 (real captures):
+    offsets 1-14 are 7 big-endian u16 / 10; offset 15 = status bits;
+    offset 17 = terminator 0x0D. Status bits: bit0 beeper, bit6 battery
+    low, bit7 on battery (0x09 = normal, 0x89 = unplugged from mains).
     """
     raw = bytes(raw)
     if len(raw) < 18:
-        raise UpsError(f"resposta SMS curta ({len(raw)} bytes): {raw.hex()}")
+        raise UpsError(f"short SMS answer ({len(raw)} bytes): {raw.hex()}")
     if raw[0] != 0x3D:
-        raise UpsError(f"marcador SMS inválido: 0x{raw[0]:02x}")
+        raise UpsError(f"invalid SMS marker: 0x{raw[0]:02x}")
     if raw[17] != 0x0D:
-        raise UpsError(f"terminador SMS inválido: 0x{raw[17]:02x}")
+        raise UpsError(f"invalid SMS terminator: 0x{raw[17]:02x}")
     u16 = lambda i: (raw[i] << 8) | raw[i + 1]
     st = raw[15]
     return {
@@ -235,7 +236,7 @@ def parse_sms_status(raw):
 
 
 class SmsSerialChannel:
-    """Protocolo binário SMS: 2400 8N1, cmd 7 bytes, resposta 18 bytes."""
+    """SMS binary protocol: 2400 8N1, 7-byte cmd, 18-byte answer."""
 
     name = "serial"
     needs_usb = False
@@ -246,7 +247,7 @@ class SmsSerialChannel:
                                  stopbits=1, timeout=3)
 
     def _send(self, frame):
-        # firmware prefere bytes espaçados (dmslabsbr/smsUps usa 100 ms)
+        # firmware prefers spaced-out bytes (dmslabsbr/smsUps uses 100 ms)
         for b in frame:
             self.ser.write(bytes([b]))
             self.ser.sleep(0.1) if hasattr(self.ser, "sleep") else time.sleep(0.1)
@@ -255,44 +256,44 @@ class SmsSerialChannel:
         self.ser.reset_input_buffer()
         frame = SMS_CMDS.get(cmd)
         if frame is None:
-            raise UpsError(f"comando {cmd} não mapeado no modo serial")
+            raise UpsError(f"command {cmd} not mapped in serial mode")
         self._send(frame)
         raw = self.ser.read(18)
         if len(raw) < 18 or raw[0] != 0x3D or raw[17] != 0x0D:
-            raise UpsError(f"resposta serial inválida: {raw.hex()}")
-        return raw  # binário; parser específico acima
+            raise UpsError(f"invalid serial answer: {raw.hex()}")
+        return raw  # binary; dedicated parser above
 
     def status(self):
         d = parse_sms_status(self.query("Q"))
-        # deriva ups_status no mesmo dialeto do Q1 (OB/OL + LB) para o
-        # formato de saída e para o sensor MQTT ficarem uniformes
-        d["ups_status"] = montar_ups_status(
+        # derive ups_status in the same dialect as Q1 (OB/OL + LB) so the
+        # output format and the MQTT sensor stay uniform
+        d["ups_status"] = build_ups_status(
             d["bits"]["on_battery"], d["bits"]["battery_low"],
             boost=d["bits"]["boost"])
         return d
 
 
 # ---------------------------------------------------------------------------
-# Camada 2 — parsers do dialeto Megatec ASCII (chaves do dict SÃO ESTÁVEIS:
-# são consumidas por JSON/MQTT/NUT — não renomear, não reordenar valores)
+# Layer 2 — Megatec ASCII parsers (dict keys ARE STABLE: they are consumed
+# by JSON/MQTT/NUT — do not rename, do not reorder)
 # ---------------------------------------------------------------------------
 
-def montar_ups_status(em_bateria, bateria_baixa, boost=False, falha=False,
-                      teste=False):
-    """Mapeia flags para o dialeto NUT: OB/OL + LB (+BOOST/ALARM/TEST).
+def build_ups_status(on_battery, battery_low, boost=False, failed=False,
+                     test=False):
+    """Maps flags to the NUT dialect: OB/OL + LB (+BOOST/ALARM/TEST).
 
-    utility_fail → "OB" (on battery), senão "OL" (on line); acrescenta
-    "LB" se battery_low. Ordem idêntica à v1 — JSON é consumido externamente.
+    utility_fail -> "OB" (on battery), else "OL" (on line); appends "LB"
+    if battery_low. Same order as v1 — the JSON is consumed externally.
     """
     st = []
-    st.append("OB" if em_bateria else "OL")
-    if bateria_baixa:
+    st.append("OB" if on_battery else "OL")
+    if battery_low:
         st.append("LB")
     if boost:
         st.append("BOOST")
-    if falha:
+    if failed:
         st.append("ALARM")
-    if teste:
+    if test:
         st.append("TEST")
     return " ".join(st)
 
@@ -300,12 +301,12 @@ def montar_ups_status(em_bateria, bateria_baixa, boost=False, falha=False,
 def parse_q1(s):
     """(226.0 195.0 226.0 014 49.0 27.5 30.0 00001000
 
-    QUIRK: battery_voltage vem POR CÉLULA (~2,22 V em flutuação) — multiplique
-    pelo número de elementos (6 p/ bateria 12 V, 12 p/ 24 V).
-    QUIRK: alguns firmwares reportam input_frequency_hz fixa em 50.0.
+    QUIRK: battery_voltage is PER CELL (~2.22 V on float) — multiply by the
+    number of cells (6 for a 12 V battery, 12 for 24 V).
+    QUIRK: some firmwares report a fixed input_frequency_hz of 50.0.
     """
     if len(s) < 46 or not s.startswith("("):
-        raise UpsError(f"Q1 malformado: {s!r}")
+        raise UpsError(f"malformed Q1: {s!r}")
     flags = s[38:46]
     out = {
         "input_voltage": float(s[1:6]),
@@ -325,16 +326,16 @@ def parse_q1(s):
             "beeper_on": flags[7] == "1",
         },
     }
-    out["ups_status"] = montar_ups_status(
+    out["ups_status"] = build_ups_status(
         out["flags"]["utility_fail"], out["flags"]["battery_low"],
         boost=out["flags"]["bypass_or_boost"],
-        falha=out["flags"]["ups_failed"],
-        teste=out["flags"]["test_in_progress"])
+        failed=out["flags"]["ups_failed"],
+        test=out["flags"]["test_in_progress"])
     return out
 
 
 def parse_f(s):
-    """#220.0 000 024.0 50.0  -> nominal de entrada, corrente, bateria, frequência"""
+    """#220.0 000 024.0 50.0  -> nominal input voltage, current, battery, frequency"""
     p = s.strip("#").split()
     return {
         "nominal_input_voltage": float(p[0]),
@@ -345,7 +346,7 @@ def parse_f(s):
 
 
 def parse_i(s):
-    """#-------------   ------     VT12046Q  -> fabricante, modelo, firmware"""
+    """#-------------   ------     VT12046Q  -> manufacturer, model, firmware"""
     p = s.strip("#").split()
     return {
         "manufacturer": p[0] if len(p) > 0 else "?",
@@ -355,14 +356,14 @@ def parse_i(s):
 
 
 def parse_bl(s):
-    """BL85 -> carga da bateria em %"""
+    """BL85 -> battery charge in %"""
     if not s.upper().startswith("BL"):
-        raise UpsError(f"BL malformado: {s!r}")
+        raise UpsError(f"malformed BL: {s!r}")
     return int(s[2:])
 
 
 # ---------------------------------------------------------------------------
-# Camada 3 — abertura do dispositivo e recuperação de travamento USB
+# Layer 3 — opening the device and recovering from a USB wedge
 # ---------------------------------------------------------------------------
 
 def open_usb():
@@ -370,19 +371,19 @@ def open_usb():
         import usb.core
         import usb.util
     except ImportError as e:
-        raise UpsError(f"pyusb não instalado (pip install pyusb): {e}") from e
+        raise UpsError(f"pyusb not installed (pip install pyusb): {e}") from e
     try:
         dev = usb.core.find(idVendor=VID, idProduct=PID)
     except usb.core.NoBackendError as e:
-        raise UpsError("libusb não encontrada (instale o pacote libusb do "
-                       "sistema)") from e
+        raise UpsError("libusb not found (install the system libusb "
+                       "package)") from e
     if dev is None:
-        raise UpsError("nobreak não encontrado no USB (0001:0000). "
-                       "Ele está ligado e o cabo conectado?")
+        raise UpsError("UPS not found on USB (0001:0000). "
+                       "Is it powered on and the cable connected?")
     try:
         try:
             if dev.is_kernel_driver_active(0):
-                dev.detach_kernel_driver(0)   # tira o usbhid da frente
+                dev.detach_kernel_driver(0)   # get usbhid out of the way
         except NotImplementedError:
             pass
         try:
@@ -391,9 +392,9 @@ def open_usb():
             dev.set_configuration()
         usb.util.claim_interface(dev, 0)
     except usb.core.USBError as e:
-        # típico sem root: o dispositivo existe mas o udev não deu permissão
-        raise UpsError(f"sem acesso ao USB ({e}) — rode como root ou instale "
-                       "a regra udev do repositório (diretório udev/)") from e
+        # typical without root: the device exists but udev did not grant access
+        raise UpsError(f"no USB access ({e}) — run as root or install "
+                       "the udev rule (drivers/mec0003/udev/)") from e
     return dev
 
 
@@ -405,25 +406,24 @@ def make_channel(method, port):
         return StringChannel(dev)
     if method == "setreport":
         return SetReportChannel(dev)
-    # auto: string é o que o UPSmart usa nesses chips
+    # auto: string is what UPSmart uses on these chips
     return StringChannel(dev)
 
 
 def sysfs_reauthorize(log):
-    """Recuperação de chip travado: ciclo 'authorized' 0->1 via sysfs.
+    """Wedged-chip recovery: 'authorized' 0->1 cycle via sysfs.
 
-    Só funciona como root (sysfs de USB é write-protected para usuário).
-    Gravação envolvida em try/except — só escreve se o arquivo estiver
-    gravável. Após o ciclo o dispositivo reenumera: o canal reaberto passa
-    pelo aquecimento e o firmware ainda pode responder zeros nos primeiros
-    segundos (~1 Hz até estabilizar — quirk documentado no cabeçalho).
+    Only works as root (USB sysfs is write-protected for users). Writes are
+    wrapped in try/except — only written if the file is writable. After the
+    cycle the device re-enumerates: the reopened channel goes through the
+    warm-up and the firmware may still answer zeros for the first seconds
+    (~1 Hz until it settles — quirk documented in the header).
     """
     if os.geteuid() != 0:
-        log("dica: sem root não é possível ciclar "
-            "/sys/bus/usb/devices/*/authorized — reconecte o cabo USB ou "
-            "rode o serviço como root")
+        log("hint: without root /sys/bus/usb/devices/*/authorized cannot be "
+            "cycled — replug the USB cable or run the service as root")
         return False
-    ciclado = False
+    cycled = False
     for auth in glob.glob("/sys/bus/usb/devices/*/authorized"):
         base = os.path.dirname(auth)
         try:
@@ -434,64 +434,64 @@ def sysfs_reauthorize(log):
         except OSError:
             continue
         if vid != "0001" or pid != "0000":
-            continue  # só mexe no dispositivo do nobreak
+            continue  # only touch the UPS device
         try:
             with open(auth, "w") as f:
                 f.write("0")
             time.sleep(1.0)
             with open(auth, "w") as f:
                 f.write("1")
-            ciclado = True
-            log(f"USB ciclado em {base}, aguardando reenumeracao")
+            cycled = True
+            log(f"USB cycled at {base}, waiting for re-enumeration")
         except OSError as e:
-            log(f"sysfs nao gravavel ({auth}): {e}")
-    return ciclado
+            log(f"sysfs not writable ({auth}): {e}")
+    return cycled
 
 
 # ---------------------------------------------------------------------------
-# Camada 4 — ponte MQTT / Home Assistant (paho-mqtt é OPCIONAL)
+# Layer 4 — MQTT / Home Assistant bridge (paho-mqtt is OPTIONAL)
 # ---------------------------------------------------------------------------
 
-# Entidades publicadas via MQTT Discovery. `chave` é a chave do JSON de
-# estado publicado em --mqtt-topic (as chaves são estáveis — ver parse_q1).
+# Entities published via MQTT Discovery. `key` is the key in the state JSON
+# published on --mqtt-topic (keys are stable — see parse_q1).
 DISCOVERY_SENSORS = (
-    {"id": "input_voltage", "nome": "Nobreak tensao de entrada",
-     "chave": "input_voltage", "unit": "V", "device_class": "voltage"},
-    {"id": "output_voltage", "nome": "Nobreak tensao de saida",
-     "chave": "output_voltage", "unit": "V", "device_class": "voltage"},
-    {"id": "load", "nome": "Nobreak carga",
-     "chave": "load_percent", "unit": "%", "icon": "mdi:gauge"},
-    {"id": "battery_charge", "nome": "Nobreak bateria",
-     "chave": "battery_charge_percent", "unit": "%", "device_class": "battery"},
-    # ups_status já vem no dialeto NUT: "OL" na rede, "OB" em bateria,
-    # "LB" bateria baixa (mapeamento feito em montar_ups_status)
-    {"id": "ups_status", "nome": "Nobreak status",
-     "chave": "ups_status", "icon": "mdi:power-plug"},
-    {"id": "temperature", "nome": "Nobreak temperatura",
-     "chave": "temperature_c", "unit": "°C", "device_class": "temperature"},
+    {"id": "input_voltage", "name": "UPS input voltage",
+     "key": "input_voltage", "unit": "V", "device_class": "voltage"},
+    {"id": "output_voltage", "name": "UPS output voltage",
+     "key": "output_voltage", "unit": "V", "device_class": "voltage"},
+    {"id": "load", "name": "UPS load",
+     "key": "load_percent", "unit": "%", "icon": "mdi:gauge"},
+    {"id": "battery_charge", "name": "UPS battery",
+     "key": "battery_charge_percent", "unit": "%", "device_class": "battery"},
+    # ups_status is already in the NUT dialect: "OL" on mains, "OB" on
+    # battery, "LB" battery low (mapping done in build_ups_status)
+    {"id": "ups_status", "name": "UPS status",
+     "key": "ups_status", "icon": "mdi:power-plug"},
+    {"id": "temperature", "name": "UPS temperature",
+     "key": "temperature_c", "unit": "°C", "device_class": "temperature"},
 )
 
 DEVICE_INFO = {
     "identifiers": ["nobreak_mec0003"],
-    "name": "Nobreak (MEC0003)",
-    "manufacturer": "SMS/NHS/generico",
+    "name": "UPS (MEC0003)",
+    "manufacturer": "SMS/NHS/generic",
     "model": "MEC0003 (0001:0000)",
 }
 
 
 def split_broker(broker):
-    """'host' ou 'host:porta' -> (host, porta); porta padrão 1883."""
+    """'host' or 'host:port' -> (host, port); default port 1883."""
     if ":" in broker:
-        host, porta = broker.rsplit(":", 1)
-        return host, int(porta)
+        host, port = broker.rsplit(":", 1)
+        return host, int(port)
     return broker, 1883
 
 
 class MqttBridge:
-    """Publica o estado JSON + configs de discovery do Home Assistant.
+    """Publishes the JSON state + Home Assistant discovery configs.
 
-    paho-mqtt é importado AQUI dentro (opcional): os modos sem --mqtt
-    nunca exigem a biblioteca.
+    paho-mqtt is imported HERE (optional): modes without --mqtt never
+    require the library.
     """
 
     def __init__(self, broker, state_topic):
@@ -499,10 +499,10 @@ class MqttBridge:
             import paho.mqtt.client as mqtt
         except ImportError as e:
             raise MissingDependency(
-                "paho-mqtt nao esta instalado (necessario apenas para --mqtt): "
+                "paho-mqtt is not installed (only needed for --mqtt): "
                 f"{e}") from e
         host, port = split_broker(broker)
-        # compativel com paho 1.x e 2.x
+        # compatible with paho 1.x and 2.x
         try:
             self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2,
                                       client_id="mec0003")
@@ -514,15 +514,15 @@ class MqttBridge:
         self.client.loop_start()
 
     def _on_connect(self, client, userdata, *args):
-        # (re)publica o discovery a cada reconexão ao broker
+        # (re)publish discovery on every broker reconnect
         self.publish_discovery()
 
     def publish_discovery(self):
         for cfg in DISCOVERY_SENSORS:
             payload = {
-                "name": cfg["nome"],
+                "name": cfg["name"],
                 "state_topic": self.state_topic,
-                "value_template": "{{ value_json." + cfg["chave"] + " }}",
+                "value_template": "{{ value_json." + cfg["key"] + " }}",
                 "unique_id": "mec0003_" + cfg["id"],
                 "device": DEVICE_INFO,
             }
@@ -532,7 +532,7 @@ class MqttBridge:
                 payload["device_class"] = cfg["device_class"]
             if "icon" in cfg:
                 payload["icon"] = cfg["icon"]
-            if cfg["chave"] != "ups_status":
+            if cfg["key"] != "ups_status":
                 payload["state_class"] = "measurement"
             topic = "homeassistant/sensor/nobreak_mec0003/" + cfg["id"] + "/config"
             self.client.publish(topic, json.dumps(payload, ensure_ascii=False),
@@ -545,52 +545,52 @@ class MqttBridge:
 
 
 # ---------------------------------------------------------------------------
-# Camada 5 — formatação, selftest e CLI
+# Layer 5 — formatting, selftest and CLI
 # ---------------------------------------------------------------------------
 
 def fmt_status(d):
     freq = d.get("input_frequency_hz", d.get("output_frequency_hz", 0.0))
     if "battery_voltage" in d:
-        # QUIRK: tensao POR CELULA (~2,22 V) — multiplicar pelo n. de
-        # elementos (6 p/ 12 V, 12 p/ 24 V) para ter a tensao total
-        linha_bat = f"bateria           : {d['battery_voltage']:6.2f} V (por celula)"
+        # QUIRK: voltage PER CELL (~2.22 V) — multiply by the number of
+        # cells (6 for 12 V, 12 for 24 V) to get the total voltage
+        batt_line = f"battery           : {d['battery_voltage']:6.2f} V (per cell)"
     else:
-        linha_bat = (f"bateria           : "
+        batt_line = (f"battery           : "
                      f"{d.get('battery_charge_percent', 0):3.0f} %")
     lines = [
-        f"rede (entrada)    : {d['input_voltage']:6.1f} V  {freq:5.1f} Hz",
-        f"saída             : {d['output_voltage']:6.1f} V  carga {d['load_percent']:3.0f}%",
-        linha_bat,
-        f"temperatura       : {d['temperature_c']:6.1f} °C",
+        f"mains (input)     : {d['input_voltage']:6.1f} V  {freq:5.1f} Hz",
+        f"output            : {d['output_voltage']:6.1f} V  load {d['load_percent']:3.0f}%",
+        batt_line,
+        f"temperature       : {d['temperature_c']:6.1f} °C",
         f"status            : {d.get('ups_status', '?')}",
     ]
     return "\n".join(lines)
 
 
-# Amostras de hardware real (2026-10-28) — usadas pelo --selftest;
-# os testes de CI (tests/test_parsers.py) usam os mesmos frames.
-Q1_AMOSTRA_REAL = "(231.2 000.0 219.8 008 50.0 2.22 27.0 00001000"
-SMS_Q_AMOSTRA = bytes.fromhex(
+# Real hardware samples (2026-10-28) — used by --selftest;
+# the CI tests (tests/test_parsers.py) use the same frames.
+Q1_REAL_SAMPLE = "(231.2 000.0 219.8 008 50.0 2.22 27.0 00001000"
+SMS_Q_SAMPLE = bytes.fromhex(
     "3d 08 34 08 34 04 38 01 22 02 58 03 e8 01 7c 09 01 0d")
 
 
 def run_selftest():
-    """Checagens sem hardware: parsers, checksums e frames reais."""
-    print(f"mec0003 {__version__} --selftest (sem hardware, sem root)")
-    falhas = 0
+    """Hardware-free checks: parsers, checksums and real frames."""
+    print(f"nobreak-omarchy driver mec0003 {__version__} --selftest (no hardware, no root)")
+    failures = 0
 
-    def check(nome, fn):
-        nonlocal falhas
+    def check(name, fn):
+        nonlocal failures
         try:
             fn()
         except Exception as e:
-            falhas += 1
-            print(f"FALHA  {nome}: {type(e).__name__}: {e}")
+            failures += 1
+            print(f"FAIL   {name}: {type(e).__name__}: {e}")
             return
-        print(f"ok     {nome}")
+        print(f"ok     {name}")
 
     def t_q1_real():
-        d = parse_q1(Q1_AMOSTRA_REAL)
+        d = parse_q1(Q1_REAL_SAMPLE)
         assert d["input_voltage"] == 231.2
         assert d["input_voltage_fault"] == 0.0
         assert d["output_voltage"] == 219.8
@@ -622,18 +622,18 @@ def run_selftest():
         assert parse_bl("bl100") == 100
 
     def t_checksum():
-        # vetores conhecidos-bons dos comandos reais do protocolo SMS
+        # known-good vectors from real SMS protocol commands
         assert sms_checksum(bytes.fromhex("51 ff ff ff ff")) == 0xB3
         assert sms_checksum(bytes.fromhex("49 ff ff ff ff")) == 0xBB
         assert sms_checksum(bytes.fromhex("46 ff ff ff ff")) == 0xBE
         assert sms_checksum(bytes.fromhex("54 00 10 00 00")) == 0x9C
-        # e os frames da v1 continuam consistentes com o checksum
+        # and the v1 frames are still consistent with the checksum
         assert SMS_CMDS["Q"] == build_sms_frame(0x51)
         assert SMS_CMDS["I"] == build_sms_frame(0x49)
         assert SMS_CMDS["F"] == build_sms_frame(0x46)
 
     def t_sms_status():
-        d = parse_sms_status(SMS_Q_AMOSTRA)
+        d = parse_sms_status(SMS_Q_SAMPLE)
         assert d["input_voltage_last"] == 210.0
         assert d["input_voltage"] == 210.0
         assert d["output_voltage"] == 108.0
@@ -642,46 +642,46 @@ def run_selftest():
         assert d["battery_charge_percent"] == 100.0
         assert d["temperature_c"] == 38.0
         assert d["bits"]["beeper_on"] is True
-        assert d["bits"]["on_battery"] is False   # 0x09 = normal (0x89 = em bateria)
-        # variante em bateria (bit 7)
-        ob = parse_sms_status(SMS_Q_AMOSTRA[:15] + b"\x89" + SMS_Q_AMOSTRA[16:])
+        assert d["bits"]["on_battery"] is False   # 0x09 = normal (0x89 = on battery)
+        # on-battery variant (bit 7)
+        ob = parse_sms_status(SMS_Q_SAMPLE[:15] + b"\x89" + SMS_Q_SAMPLE[16:])
         assert ob["bits"]["on_battery"] is True
 
-    def t_invalidos():
-        for ruim in ("", "XYZ", "(000", "(1.0 2.0 3.0 004 5.0 6.0 7.0 0"):
+    def t_invalid():
+        for bad in ("", "XYZ", "(000", "(1.0 2.0 3.0 004 5.0 6.0 7.0 0"):
             try:
-                parse_q1(ruim)
+                parse_q1(bad)
             except UpsError:
                 pass
             else:
-                raise AssertionError(f"parse_q1 aceitou {ruim!r}")
-        for ruim in ("", "85", "XX85"):
+                raise AssertionError(f"parse_q1 accepted {bad!r}")
+        for bad in ("", "85", "XX85"):
             try:
-                parse_bl(ruim)
+                parse_bl(bad)
             except UpsError:
                 pass
             else:
-                raise AssertionError(f"parse_bl aceitou {ruim!r}")
-        for ruim in (b"", b"\x3d\x00", b"\x3e" + b"\x00" * 17,
-                     SMS_Q_AMOSTRA[:17] + b"\x0a"):
+                raise AssertionError(f"parse_bl accepted {bad!r}")
+        for bad in (b"", b"\x3d\x00", b"\x3e" + b"\x00" * 17,
+                     SMS_Q_SAMPLE[:17] + b"\x0a"):
             try:
-                parse_sms_status(ruim)
+                parse_sms_status(bad)
             except UpsError:
                 pass
             else:
-                raise AssertionError(f"parse_sms_status aceitou {ruim!r}")
+                raise AssertionError(f"parse_sms_status accepted {bad!r}")
 
-    check("parse_q1 frame real 2026-10-28", t_q1_real)
-    check("parse_q1 mapeamento OB/OL/LB", t_q1_flags)
-    check("parse_f nominais", t_f)
-    check("parse_i identificacao", t_i)
-    check("parse_bl carga", t_bl)
+    check("parse_q1 real frame 2026-10-28", t_q1_real)
+    check("parse_q1 OB/OL/LB mapping", t_q1_flags)
+    check("parse_f ratings", t_f)
+    check("parse_i identification", t_i)
+    check("parse_bl charge", t_bl)
     check("sms_checksum + frames SMS", t_checksum)
-    check("parse_sms_status resposta Q", t_sms_status)
-    check("frames invalidos rejeitados", t_invalidos)
+    check("parse_sms_status Q answer", t_sms_status)
+    check("invalid frames rejected", t_invalid)
 
-    if falhas:
-        print(f"SELFTEST FALHOU ({falhas} teste(s))")
+    if failures:
+        print(f"SELFTEST FAILED ({failures} test(s))")
         return 1
     print("SELFTEST OK")
     return 0
@@ -692,9 +692,9 @@ def one_shot(ch, args):
         idx = int(args.raw, 16)
         return {"raw": ch._get_string(idx)}
     if args.beeper:
-        return {"beeper": ch.query("Q") or "(sem resposta — normal)"}
+        return {"beeper": ch.query("Q") or "(no answer — normal)"}
     if args.test is not None:
-        return {"test": ch.query("T") or "(iniciado)"}
+        return {"test": ch.query("T") or "(started)"}
     result = {}
     if args.info:
         result.update(parse_i(ch.query("I")))
@@ -711,9 +711,9 @@ def one_shot(ch, args):
 
 
 def run_loop(args, ch, mqtt):
-    """Modo watch/daemon: tolera travamentos e reenumerações do firmware."""
-    intervalo = args.watch if args.watch > 0 else args.interval
-    erros_seguidos = 0
+    """watch/daemon mode: tolerates firmware wedges and re-enumerations."""
+    interval_s = args.watch if args.watch > 0 else args.interval
+    consecutive_errors = 0
     was_ob = False
 
     def log_stderr(msg):
@@ -722,19 +722,19 @@ def run_loop(args, ch, mqtt):
     while True:
         try:
             r = one_shot(ch, args)
-            erros_seguidos = 0
-            # para o sensor de bateria do HA: canal USB consegue BL a cada poll
+            consecutive_errors = 0
+            # for the HA battery sensor: the USB channel can read BL on every poll
             if (mqtt is not None and "battery_charge_percent" not in r
                     and ch.name in ("string", "setreport")):
                 try:
                     r["battery_charge_percent"] = parse_bl(ch.query("BL"))
                 except UpsError:
                     pass
-            # daemon é silencioso no stdout (systemd/journal) salvo --verbose
+            # daemon is silent on stdout (systemd/journal) unless --verbose
             if not args.daemon or args.verbose:
-                saida = (json.dumps(r, ensure_ascii=False) if args.json
+                output = (json.dumps(r, ensure_ascii=False) if args.json
                          else fmt_status(r))
-                print(saida, flush=True)
+                print(output, flush=True)
             if mqtt is not None:
                 mqtt.publish_state(r)
             ob = "OB" in r.get("ups_status", "")
@@ -744,18 +744,18 @@ def run_loop(args, ch, mqtt):
         except (KeyboardInterrupt, SystemExit):
             raise
         except Exception as e:
-            erros_seguidos += 1
+            consecutive_errors += 1
             log_stderr(f"{e}")
-            if erros_seguidos >= 3:
-                # chip travado de vez: tenta ciclo 'authorized' (só root)
+            if consecutive_errors >= 3:
+                # chip wedged for good: try an 'authorized' cycle (root only)
                 if sysfs_reauthorize(log_stderr):
                     time.sleep(2.0)
-                erros_seguidos = 0
+                consecutive_errors = 0
             try:
                 ch = make_channel(args.method, args.port)
-                # QUIRK: apos reabrir, o firmware responde zeros ate
-                # completar o lock-step — algumas leituras a ~1 Hz
-                # sao descartadas ate os valores estabilizarem
+                # QUIRK: after reopening, the firmware answers zeros until
+                # the lock-step completes — a few ~1 Hz reads are
+                # discarded until the values settle
                 for _ in range(3):
                     time.sleep(1.0)
                     try:
@@ -764,72 +764,75 @@ def run_loop(args, ch, mqtt):
                         pass
             except UpsError:
                 pass
-        time.sleep(intervalo)
+        time.sleep(interval_s)
 
 
-EPILOGO = """\
-exemplos:
-  sudo python3 mec0003.py                      # status unico (Q1)
-  sudo python3 mec0003.py --watch 1            # monitor a cada 1 s
-  sudo python3 mec0003.py --json --info        # modelo/firmware em JSON
-  sudo python3 mec0003.py --beeper             # alterna o bip
-  sudo python3 mec0003.py --method serial --port /dev/ttyUSB0
-  sudo python3 mec0003.py --daemon --interval 5 --mqtt localhost:1883
-                                               # servico (systemd) + Home Assistant
-  python3 mec0003.py --selftest                # checagem sem hardware (CI)
+EPILOG = """\
+examples:
+  sudo python3 driver.py                       # single status read (Q1)
+  sudo python3 driver.py --watch 1             # monitor every 1 s
+  sudo python3 driver.py --json --info         # model/firmware as JSON
+  sudo python3 driver.py --beeper              # toggles the beeper
+  sudo python3 driver.py --method serial --port /dev/ttyUSB0
+  sudo python3 driver.py --daemon --interval 5 --mqtt localhost:1883
+                                               # service (systemd) + Home Assistant
+  python3 driver.py --selftest                 # hardware-free check (CI)
 
-codigos de saida: 0 ok | 1 erro de dispositivo/protocolo |
-2 dependencia opcional ausente (paho-mqtt)
+WARNING: do not query the chip while NUT (nut-driver@...) is running —
+concurrent access wedges the firmware. Stop NUT first, or use upsc.
+
+exit codes: 0 ok | 1 device/protocol error |
+2 optional dependency missing (paho-mqtt)
 """
 
 
-def montar_parser():
+def build_parser():
     ap = argparse.ArgumentParser(
         description=__doc__,
-        epilog=EPILOGO,
+        epilog=EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--method", choices=["auto", "string", "setreport", "serial"],
                     default="auto",
-                    help="metodo de acesso ao nobreak (padrao: auto)")
+                    help="UPS access method (default: auto)")
     ap.add_argument("--port", default="/dev/ttyUSB0",
-                    help="porta serial para --method serial (padrao /dev/ttyUSB0)")
+                    help="serial port for --method serial (default /dev/ttyUSB0)")
     ap.add_argument("--watch", type=int, metavar="N", default=0,
-                    help="monitor continuo, uma leitura a cada N segundos")
+                    help="continuous monitor, one reading every N seconds")
     ap.add_argument("--daemon", action="store_true",
-                    help="modo servico (systemd): silencioso no stdout a nao "
-                         "ser com --verbose; intervalo padrao 5 s (--interval)")
+                    help="service mode (systemd): silent on stdout unless "
+                         "--verbose; default interval 5 s (--interval)")
     ap.add_argument("--interval", type=float, metavar="S", default=5.0,
-                    help="intervalo do --daemon em segundos (padrao 5)")
-    ap.add_argument("--mqtt", metavar="broker[:porta]", default=None,
-                    help="publica estado JSON no broker MQTT e cria as "
-                         "entidades no Home Assistant (Discovery); tambem via "
+                    help="--daemon interval in seconds (default 5)")
+    ap.add_argument("--mqtt", metavar="broker[:port]", default=None,
+                    help="publish the JSON state to the MQTT broker and create "
+                         "the Home Assistant entities (Discovery); also via "
                          "env MEC0003_MQTT")
     ap.add_argument("--mqtt-topic", default="home/nobreak/state",
-                    help="topico de estado MQTT (padrao home/nobreak/state)")
-    ap.add_argument("--json", action="store_true", help="saida em JSON")
+                    help="MQTT state topic (default home/nobreak/state)")
+    ap.add_argument("--json", action="store_true", help="JSON output")
     ap.add_argument("--verbose", action="store_true",
-                    help="no --daemon, imprime cada leitura no stdout")
+                    help="with --daemon, print every reading to stdout")
     ap.add_argument("--info", action="store_true",
-                    help="fabricante/modelo/firmware (I)")
-    ap.add_argument("--ratings", action="store_true", help="valores nominais (F)")
-    ap.add_argument("--battery", action="store_true", help="carga da bateria %% (BL)")
-    ap.add_argument("--beeper", action="store_true", help="alterna o bip (Q)")
-    ap.add_argument("--test", type=int, metavar="SEG", help="teste de bateria (T)")
+                    help="manufacturer/model/firmware (I)")
+    ap.add_argument("--ratings", action="store_true", help="rated values (F)")
+    ap.add_argument("--battery", action="store_true", help="battery charge %% (BL)")
+    ap.add_argument("--beeper", action="store_true", help="toggle the beeper (Q)")
+    ap.add_argument("--test", type=int, metavar="SEC", help="battery test (T)")
     ap.add_argument("--raw", metavar="IDX",
-                    help="le string bruta IDX (hex) — uso avancado")
+                    help="read raw string IDX (hex) — advanced use")
     ap.add_argument("--selftest", action="store_true",
-                    help="autochecagem dos parsers/checksums sem hardware e "
-                         "sem root (usado pelo CI)")
+                    help="self-check of parsers/checksums with no hardware and "
+                         "no root (used by CI)")
     return ap
 
 
 def _sigterm_handler(signum, frame):
-    # systemd encerra com SIGTERM — sai limpo com codigo 0
+    # systemd stops us with SIGTERM — exit cleanly with code 0
     raise SystemExit(0)
 
 
 def main():
-    args = montar_parser().parse_args()
+    args = build_parser().parse_args()
 
     if args.selftest:
         return run_selftest()
@@ -837,26 +840,26 @@ def main():
     try:
         signal.signal(signal.SIGTERM, _sigterm_handler)
     except (ValueError, OSError):
-        pass  # nao estamos na thread principal (ex.: embutido em teste)
+        pass  # not on the main thread (e.g. embedded in a test)
 
-    # --mqtt (ou env MEC0003_MQTT): paho-mqtt e OPCIONAL — sai com 2 se faltar
+    # --mqtt (or env MEC0003_MQTT): paho-mqtt is OPTIONAL — exit 2 if missing
     broker = args.mqtt or os.environ.get("MEC0003_MQTT")
     mqtt = None
     if broker:
         try:
             mqtt = MqttBridge(broker, args.mqtt_topic)
         except MissingDependency as e:
-            print(f"ERRO: {e}", file=sys.stderr)
-            print("Instale com: pip install paho-mqtt", file=sys.stderr)
+            print(f"ERROR: {e}", file=sys.stderr)
+            print("Install with: pip install paho-mqtt", file=sys.stderr)
             return 2
         except Exception as e:
-            print(f"ERRO: MQTT: {e}", file=sys.stderr)
+            print(f"ERROR: MQTT: {e}", file=sys.stderr)
             return 1
 
     try:
         ch = make_channel(args.method, args.port)
     except UpsError as e:
-        print(f"ERRO: {e}", file=sys.stderr)
+        print(f"ERROR: {e}", file=sys.stderr)
         return 1
 
     if not (args.watch or args.daemon):
@@ -869,7 +872,7 @@ def main():
                       f"{k:28s}: {v}" for k, v in r.items())))
             return 0
         except UpsError as e:
-            print(f"ERRO: {e}", file=sys.stderr)
+            print(f"ERROR: {e}", file=sys.stderr)
             return 1
 
     try:

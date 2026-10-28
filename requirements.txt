@@ -1,7 +1,8 @@
-# Dependências do núcleo do driver (canais string/setreport e serial)
+# Dependencies of the MEC0003 standalone driver (string/setreport and serial channels).
+# The core (guardian, autoheal) needs only python3 + NUT's upsc.
 pyusb
 pyserial
 hidapi
 
-# Extras (opcionais — não são dependências duras dos modos sem --mqtt):
-# paho-mqtt    # ponte --mqtt / --daemon com Home Assistant
+# Extras (optional — not hard dependencies of the modes without --mqtt):
+# paho-mqtt    # --mqtt / --daemon bridge with Home Assistant

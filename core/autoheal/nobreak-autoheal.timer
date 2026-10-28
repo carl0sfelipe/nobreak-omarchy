@@ -1,5 +1,5 @@
 [Unit]
-Description=Checa o NUT do nobreak a cada 2 min
+Description=nobreak-omarchy autoheal — check the UPS NUT data every 2 min
 [Timer]
 OnBootSec=3min
 OnUnitActiveSec=2min

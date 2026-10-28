@@ -1,0 +1,33 @@
+# =============================================================================
+# nobreak-mec0003.service — standalone driver (no NUT) for UPSes with the
+# MEC0003 USB chip (0001:0000). Installed to /etc/systemd/system by
+# install.sh --driver mec0003 --mode standalone; expects the venv in
+# /usr/local/lib/nobreak-omarchy/drivers/mec0003.
+# =============================================================================
+[Unit]
+Description=nobreak-omarchy MEC0003 standalone driver (Megatec Q1 over USB)
+Documentation=file:/usr/local/lib/nobreak-omarchy/drivers/mec0003
+# NUT and this driver must NEVER talk to the chip at the same time (the
+# firmware wedges under concurrent access / wrong protocol).
+Conflicts=nobreak-mec0003-mqtt.service nut-driver@nobreak.service
+After=multi-user.target
+
+[Service]
+Type=simple
+# -u: unbuffered log (the firmware is slow to wake up, we want everything in
+# the journal). The driver does the ~1 Hz post-plug warm-up internally.
+ExecStart=/usr/local/lib/nobreak-omarchy/drivers/mec0003/venv/bin/python -u /usr/local/lib/nobreak-omarchy/drivers/mec0003/driver.py --daemon
+Restart=always
+RestartSec=10
+# --- Privilege hint ------------------------------------------------------------
+# Access is RAW via libusb/usbfs. The simplest is running as root (default:
+# no User= directive). To run without root, the user must belong to the group
+# of the udev rule 99-nobreak-mec0003.rules ("nut" on Arch and Debian/Ubuntu;
+# "plugdev" as the fallback picked by install.sh), which also grants write
+# access to /dev/bus/usb (MODE=0664). Uncomment and adjust to drop root:
+#User=nut
+#Group=nut
+#SupplementaryGroups=
+
+[Install]
+WantedBy=multi-user.target

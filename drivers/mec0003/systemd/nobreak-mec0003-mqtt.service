@@ -1,0 +1,32 @@
+# =============================================================================
+# nobreak-mec0003-mqtt.service — MQTT variant of the standalone driver: reads
+# the UPS with the MEC0003 USB chip (0001:0000) and publishes to the broker
+# configured in /etc/nobreak-mec0003.env (created by install.sh --mode mqtt).
+# =============================================================================
+[Unit]
+Description=nobreak-omarchy MEC0003 standalone driver with MQTT publishing
+Documentation=file:/usr/local/lib/nobreak-omarchy/drivers/mec0003
+# Same chip as the standalone service: never run both together.
+Conflicts=nobreak-mec0003.service nut-driver@nobreak.service
+Wants=network-online.target
+After=multi-user.target network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/nobreak-mec0003.env
+# Variables come from the EnvironmentFile (expanded by systemd):
+#   MQTT_BROKER/MQTT_PORT -> --mqtt broker:port · MQTT_TOPIC_PREFIX -> topic
+#   POLL_SECONDS -> daemon cadence (2s keeps the chip "alive" after a plug)
+# Driver bonus: set NUT_ON_BATTERY_CMD in the env to run a command when the
+# UPS goes on battery.
+ExecStart=/usr/local/lib/nobreak-omarchy/drivers/mec0003/venv/bin/python -u /usr/local/lib/nobreak-omarchy/drivers/mec0003/driver.py --daemon --interval ${POLL_SECONDS} --mqtt ${MQTT_BROKER}:${MQTT_PORT} --mqtt-topic ${MQTT_TOPIC_PREFIX}/state
+Restart=always
+RestartSec=10
+# --- Privilege hint ------------------------------------------------------------
+# Same as the standalone service: raw USB access. Root is the default; to run
+# without root, use the udev rule group ("nut" on Arch/Debian, "plugdev" fallback).
+#User=nut
+#Group=nut
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,14 @@
+# 99-nobreak-mec0003.rules — USB permissions for UPSes with the MEC0003 chip
+# (nobreak-omarchy driver: mec0003)
+#
+# Chip: VID 0001 / PID 0000, product string "MEC0003" (SMS, NHS, Powercool,
+# CPC, DEXP, Hunnox, Eurocase…). The firmware does not implement real HID —
+# access is raw via libusb (nutdrv_qx subdriver hunnox, or driver.py), so the
+# device node under /dev/bus/usb must be accessible to the driver's group.
+#
+# Group: both Arch and Debian/Ubuntu use "nut" (created by the NUT package).
+# If the nut group does not exist on the target machine, install.sh rewrites
+# this line in the installed copy under /etc/udev/rules.d/ to use "plugdev".
+# This file in the repo is the TEMPLATE — install.sh installs it.
+
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0001", ATTRS{idProduct}=="0000", MODE="0664", GROUP="nut"

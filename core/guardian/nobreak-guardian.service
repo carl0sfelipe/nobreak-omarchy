@@ -1,0 +1,25 @@
+# nobreak-omarchy power guardian — USER service (systemd --user, no root).
+# install.sh copies guardian.py to /usr/local/lib/nobreak-omarchy/ and this
+# unit to /etc/systemd/user/. Manual install:
+#   mkdir -p ~/.config/systemd/user/
+#   cp nobreak-guardian.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now nobreak-guardian.service
+#
+# Requires: NUT running (nut-driver@nobreak + upsd) and upsc in PATH.
+# Customize the outage action by editing ExecStart,
+# e.g. --on-cmd 'systemctl suspend'
+
+[Unit]
+Description=nobreak-omarchy power guardian — watches the UPS and notifies power outages
+# Wait for upsd before polling
+After=nut-server.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/lib/nobreak-omarchy/guardian.py --ups nobreak@localhost --interval 5
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=default.target

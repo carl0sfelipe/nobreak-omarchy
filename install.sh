@@ -1,25 +1,31 @@
 #!/usr/bin/env bash
 # =============================================================================
-# install.sh — instalador do kit nobreak-mec0003
+# install.sh — installer of nobreak-omarchy, the community UPS kit for
+# Omarchy (Arch + Hyprland) and other systemd Linux desktops.
 #
-# Nobreaks SMS/NHS/genéricos com chip USB MEC0003 (VID:PID 0001:0000, produto
-# "MEC0003"). O chip fala Megatec Q1 tunelado em descritores de string USB;
-# o firmware é frágil: trava se receber protocolo errado (recuperação:
-# --unwedge ou replug) e responde ZEROS até haver polling ~1Hz pós-plug.
+# Installs, for the chosen driver (drivers/<name>/):
+#   * the driver's udev rule and NUT config (/etc/nut/ups.conf section)
+#   * core/autoheal  — system timer that replugs the USB by software if NUT
+#                      loses the UPS (only for drivers with autoheal = true)
+#   * core/guardian  — user service with desktop notifications on power events
 #
-# Uso:
-#   bash install.sh --check            diagnóstico SEM root (pode rodar como usuário)
-#   bash install.sh --unwedge          ciclo "authorized" no sysfs p/ destravar o USB (root)
-#   bash install.sh [--mode MODO] [--battery 12|24] [--name NOME] [--yes] [--dry-run]
+# Usage:
+#   bash install.sh --check            diagnostics WITHOUT root
+#   bash install.sh --unwedge          sysfs "authorized" cycle to unwedge the USB (root)
+#   bash install.sh --list-drivers     list the available drivers
+#   sudo bash install.sh [--driver NAME] [--mode MODE] [--battery 12|24]
+#                        [--name UPS] [--no-guardian] [--no-autoheal]
+#                        [--yes] [--dry-run]
 #
-# Modos:
-#   nut        integração com NUT (nutdrv_qx subdriver=hunnox, protocol=q1) — recomendado
-#   standalone driver Python (mec0003.py) + systemd, sem NUT
-#   mqtt       standalone + paho-mqtt, config em /etc/nobreak-mec0003.env
+# --driver   driver directory under drivers/ (default: mec0003)
+# Modes (the driver's driver.toml says which it supports):
+#   nut        NUT integration (recommended; enables guardian + autoheal)
+#   standalone the driver's own Python daemon + systemd, without NUT
+#   mqtt       standalone + paho-mqtt, config in /etc/nobreak-<driver>.env
 #
-# --dry-run  imprime tudo o que faria, sem alterar nada (não exige root).
-# --yes      não-interativo (usa os defaults; exige --mode se não houver tty).
-# Arch Linux primeiro; Debian/Ubuntu compatível. bash >= 4, NUT >= 2.7.
+# --dry-run  prints everything it would do, changes nothing (no root needed).
+# --yes      non-interactive (uses defaults).
+# Arch Linux / Omarchy first; Debian/Ubuntu compatible. bash >= 4, NUT >= 2.7.
 # =============================================================================
 set -euo pipefail
 
@@ -27,83 +33,87 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib.sh
 . "$SCRIPT_DIR/scripts/lib.sh"
 
-UPSC_TIMEOUT=90   # s — aquecimento do chip após restart pode demorar ~1 min
+UPSC_TIMEOUT=90   # s — chip warm-up after a restart can take ~1 min
 
 usage() {
-    sed -n '2,23p' "${BASH_SOURCE[0]}" | sed 's/^#\{1\} \{0,1\}//'
+    sed -n '2,29p' "${BASH_SOURCE[0]}" | sed 's/^#\{1\} \{0,1\}//'
 }
 
 # =============================================================================
-# --check: diagnóstico sem root
+# --check: diagnostics without root
 # =============================================================================
 do_check() {
     local reasons=() nut_ok=0 sa_ok=0
 
-    step "Verificação de ambiente — kit nobreak MEC0003 (${MEC_VID}:${MEC_PID})"
+    step "Environment check — $KIT_NAME, driver $DRIVER (${DRV_VIDPID})"
+    info "driver status: ${DRV_STATUS:-unknown}"
 
-    # 1) Dispositivo presente (lsusb + sysfs)
+    # 1) Device present (lsusb + sysfs)
     local lsusb_line sysfs_devs
-    lsusb_line="$(lsusb 2>/dev/null | grep -i "${MEC_VID}:${MEC_PID}" || true)"
+    lsusb_line="$(lsusb 2>/dev/null | grep -i "${DRV_VIDPID}" || true)"
     if [[ -n $lsusb_line ]]; then
-        ok "dispositivo presente (lsusb): $lsusb_line"
+        ok "device present (lsusb): $lsusb_line"
     else
-        warn "dispositivo ${MEC_VID}:${MEC_PID} NÃO visto no lsusb — plugue o nobreak (a instalação sem o hardware é permitida)."
+        warn "device ${DRV_VIDPID} NOT seen in lsusb — plug in the UPS (installing without the hardware is allowed)."
     fi
-    sysfs_devs="$(find_mec_sysfs)"
+    sysfs_devs="$(find_dev_sysfs)"
     if [[ -n $sysfs_devs ]]; then
         local d
-        for d in $sysfs_devs; do ok "sysfs: /sys/bus/usb/devices/$d (usado pelo --unwedge)"; done
+        for d in $sysfs_devs; do ok "sysfs: /sys/bus/usb/devices/$d (used by --unwedge and autoheal)"; done
     else
-        info "sysfs: nenhum nó ${MEC_VID}:${MEC_PID} (mesma observação acima)."
+        info "sysfs: no ${DRV_VIDPID} node (same remark as above)."
     fi
 
-    # 2) NUT (modo nut)
-    step "NUT (necessário para --mode nut)"
-    local nutdrv upsc_bin nut_pkg
-    nutdrv=""
-    local p
-    for p in /usr/lib/nut/nutdrv_qx /usr/libexec/nut/nutdrv_qx /lib/nut/nutdrv_qx; do
-        if [[ -x $p ]]; then nutdrv=$p; break; fi
-    done
-    if [[ -z $nutdrv ]]; then nutdrv="$(find_bin nutdrv_qx || true)"; fi
-    if [[ -n $nutdrv ]]; then
-        ok "nutdrv_qx: $nutdrv"
+    # 2) NUT (nut mode)
+    step "NUT (needed for --mode nut)"
+    local nutdrv="" upsc_bin nut_pkg p drvbin=${DRV_NUT_DRIVER:-}
+    if [[ -n $drvbin ]]; then
+        for p in "/usr/lib/nut/$drvbin" "/usr/libexec/nut/$drvbin" "/lib/nut/$drvbin"; do
+            if [[ -x $p ]]; then nutdrv=$p; break; fi
+        done
+        if [[ -z $nutdrv ]]; then nutdrv="$(find_bin "$drvbin" || true)"; fi
+        if [[ -n $nutdrv ]]; then
+            ok "$drvbin: $nutdrv"
+        else
+            warn "$drvbin NOT found (expected /usr/lib/nut/$drvbin)."
+            reasons+=("nut mode: $drvbin missing — install NUT (pacman -S nut / apt install nut)")
+        fi
     else
-        warn "nutdrv_qx NÃO encontrado (espere /usr/lib/nut/nutdrv_qx)."
-        reasons+=("modo nut: nutdrv_qx ausente — instale o pacote NUT (pacman -S nut / apt install nut)")
+        warn "driver $DRIVER declares no nut_driver — nut mode not available for it."
+        reasons+=("nut mode: not supported by driver $DRIVER")
     fi
     upsc_bin="$(find_bin upsc || true)"
     if [[ -n $upsc_bin ]]; then
         ok "upsc: $upsc_bin"
     else
-        warn "upsc NÃO encontrado — sem ele o instalador não consegue validar."
-        reasons+=("modo nut: upsc ausente — instale o pacote NUT")
+        warn "upsc NOT found — without it the installer cannot validate (and the guardian cannot run)."
+        reasons+=("nut mode: upsc missing — install NUT")
     fi
     if [[ ! -d /etc/nut ]]; then
-        warn "/etc/nut não existe (pacote NUT não instalado?)."
-        reasons+=("modo nut: /etc/nut ausente")
+        warn "/etc/nut does not exist (NUT package not installed?)."
+        reasons+=("nut mode: /etc/nut missing")
     fi
     nut_pkg="$(pacman -Q nut 2>/dev/null || dpkg-query -W -f='${Version}\n' nut 2>/dev/null || true)"
-    if [[ -n $nut_pkg ]]; then info "pacote NUT: $nut_pkg"; fi
+    if [[ -n $nut_pkg ]]; then info "NUT package: $nut_pkg"; fi
     if [[ -n $nutdrv && -n $upsc_bin && -d /etc/nut ]]; then nut_ok=1; fi
 
-    # 3) Seção atual do ups.conf
-    step "Seção atual em $NUT_CONF"
+    # 3) Current ups.conf section
+    step "Current section in $NUT_CONF"
     if [[ -r $NUT_CONF ]]; then
         local cur
         cur="$(upsconf_show_section "$NUT_CONF" "$UPS_NAME")"
         if [[ -n $cur ]]; then
-            info "seção [$UPS_NAME] já existe (o instalador a substitui, com backup):"
+            info "section [$UPS_NAME] already exists (the installer replaces it, with a backup):"
             printf '%s\n' "$cur" | sed 's/^/      | /'
         else
-            info "nenhuma seção [$UPS_NAME] ainda — será criada."
+            info "no [$UPS_NAME] section yet — it will be created."
         fi
     else
-        info "$NUT_CONF não legível/ausente."
+        info "$NUT_CONF not readable/missing."
     fi
 
-    # 4) Python (modos standalone/mqtt)
-    step "Python (necessário para --mode standalone|mqtt)"
+    # 4) Python
+    step "Python (guardian; driver --mode standalone|mqtt)"
     local pyver py_mm py_ok=0
     pyver="$(python3 -V 2>&1 || true)"
     py_mm=0
@@ -113,93 +123,104 @@ do_check() {
     if (( py_mm >= 308 )); then
         ok "python3: $pyver"
     else
-        warn "python3 muito antigo: $pyver (mínimo 3.8)."
-        reasons+=("modo standalone/mqtt: python3 >= 3.8 necessário")
+        warn "python3 too old: $pyver (minimum 3.8)."
+        reasons+=("python3 >= 3.8 required")
     fi
     if python3 -c 'import venv, ensurepip' >/dev/null 2>&1; then
-        ok "venv/ensurepip disponíveis"
+        ok "venv/ensurepip available"
     else
-        warn "venv/ensurepip indisponíveis (no Debian: apt install python3-venv)."
-        reasons+=("modo standalone/mqtt: python3-venv necessário")
+        warn "venv/ensurepip unavailable (on Debian: apt install python3-venv)."
+        reasons+=("standalone/mqtt mode: python3-venv required")
     fi
-    if (( py_mm >= 308 )) && python3 -c 'import venv, ensurepip' >/dev/null 2>&1; then py_ok=1; fi
+    if (( py_mm >= 308 )) && python3 -c 'import venv, ensurepip' >/dev/null 2>&1 \
+        && [[ -f $DRV_SCRIPT ]]; then py_ok=1; fi
 
-    # 5) systemd
+    # 5) Desktop notifications (guardian)
+    step "Desktop notifications (guardian)"
+    if find_bin notify-send >/dev/null; then
+        ok "notify-send available"
+    else
+        warn "notify-send missing (pacman -S libnotify) — the guardian will only log."
+    fi
+
+    # 6) systemd
     step "systemd"
     local systemctl_bin
     systemctl_bin="$(find_bin systemctl || true)"
     if [[ -n $systemctl_bin && -d /run/systemd/system ]]; then
-        ok "systemd ativo como init ($systemctl_bin)"
+        ok "systemd is the init ($systemctl_bin)"
     elif [[ -n $systemctl_bin ]]; then
-        warn "systemctl existe ($systemctl_bin) mas systemd NÃO é o init desta sessão."
-        reasons+=("systemd não está rodando (contêiner?) — units não podem ser habilitadas")
+        warn "systemctl exists ($systemctl_bin) but systemd is NOT the init of this session."
+        reasons+=("systemd is not running (container?) — units cannot be enabled")
     else
-        warn "systemctl não encontrado."
-        reasons+=("systemctl ausente")
+        warn "systemctl not found."
+        reasons+=("systemctl missing")
     fi
 
-    # Veredito: instalável se qualquer modo for viável.
-    step "Veredito"
-    if (( nut_ok )); then ok "modo nut: DISPONÍVEL"; else warn "modo nut: INDISPONÍVEL"; fi
+    # Verdict: installable if any mode is viable.
+    step "Verdict"
+    if (( nut_ok )); then ok "nut mode: AVAILABLE"; else warn "nut mode: UNAVAILABLE"; fi
     if (( py_ok )) && [[ -n $systemctl_bin ]]; then
         sa_ok=1
-        ok "modo standalone/mqtt: DISPONÍVEL"
+        ok "standalone/mqtt mode: AVAILABLE"
     else
-        warn "modo standalone/mqtt: INDISPONÍVEL"
+        warn "standalone/mqtt mode: UNAVAILABLE"
     fi
     if (( nut_ok || sa_ok )); then
-        ok "AMBIENTE INSTALÁVEL — rode: sudo bash install.sh --mode <modo>"
+        ok "ENVIRONMENT INSTALLABLE — run: sudo bash install.sh --driver $DRIVER --mode <mode>"
         return 0
     fi
-    err "AMBIENTE NÃO INSTALÁVEL — motivos:"
+    err "ENVIRONMENT NOT INSTALLABLE — reasons:"
     local r
     for r in "${reasons[@]}"; do info " - $r"; done
     return 1
 }
 
 # =============================================================================
-# --unwedge: destravar o firmware USB via sysfs authorized
+# --unwedge: unwedge the USB firmware via sysfs authorized
 # =============================================================================
 do_unwedge() {
     require_root_or_dry
-    step "Destravamento do chip MEC0003 (ciclo authorized no sysfs)"
-    usb_cycle_authorized || die "o ciclo authorized falhou (o chip está plugado?)."
-    ok "concluído. Dê até ~1 min de polling (pollinterval=2 no NUT) para o chip sair dos ZEROS."
+    step "Unwedging the $DRIVER chip (sysfs authorized cycle)"
+    usb_cycle_authorized || die "the authorized cycle failed (is the chip plugged in?)."
+    ok "done. Give it up to ~1 min of polling (pollinterval=2 in NUT) to leave the ZEROS state."
 }
 
 # =============================================================================
-# Passo comum: regra udev (todos os modos)
+# Common step: udev rule (all modes)
 # =============================================================================
 install_udev_rule() {
-    step "Regra udev (permissão de acesso ao dispositivo)"
-    local group src tmp
+    step "udev rule (device access permission)"
+    if [[ -z $DRV_UDEV_SRC ]]; then
+        info "driver $DRIVER ships no udev rule — skipping."
+        return 0
+    fi
+    local group tmp
     group="$(detect_udev_group)"
     if [[ -z $group ]]; then
         if (( DRY_RUN )); then
             group="nut"
-            info "nenhum grupo nut/plugdev existe — no modo real: groupadd -f nut e usaria grupo nut"
+            info "no nut/plugdev group exists — for real: groupadd -f nut and use group nut"
         else
             run groupadd -f nut
             group=nut
         fi
     fi
-    src="$SCRIPT_DIR/udev/$UDEV_RULE_SRC_NAME"
-    [[ -r $src ]] || die "modelo de regra udev ausente: $src"
-    # O modelo usa GROUP="nut"; reescreve se o grupo escolhido for outro.
-    tmp="$(sed "s/GROUP=\"nut\"/GROUP=\"$group\"/" "$src")"
-    printf '%s\n' "$tmp" | write_file "$UDEV_RULE_DST" 0644
+    # The template uses GROUP="nut"; rewrite if the chosen group differs.
+    tmp="$(sed "s/GROUP=\"nut\"/GROUP=\"$group\"/" "$DRV_UDEV_SRC")"
+    printf '%s\n' "$tmp" | write_file "$DRV_UDEV_DST" 0644
     run udevadm control --reload-rules
-    # --subsystem-match: aceito em systemd antigos (Debian) e atuais (alias).
+    # --subsystem-match: accepted by old (Debian) and current systemd.
     run udevadm trigger --subsystem-match=usb
-    ok "dispositivo ${MEC_VID}:${MEC_PID} acessível ao grupo '$group' após retrigger."
+    ok "device ${DRV_VIDPID} accessible to group '$group' after retrigger."
 }
 
 # =============================================================================
-# Modo NUT
+# NUT mode
 # =============================================================================
 write_upsconf_section() {
     local name=$1 packs=$2 tmp
-    step "Gravando seção [$name] em $NUT_CONF (idempotente)"
+    step "Writing section [$name] to $NUT_CONF (idempotent)"
     tmp="$(mktemp)"
     if [[ -r $NUT_CONF ]]; then
         backup_file "$NUT_CONF"
@@ -208,24 +229,25 @@ write_upsconf_section() {
     fi
     upsconf_section_text "$name" "$packs" >> "$tmp"
     if (( DRY_RUN )); then
-        printf '%s[dry ]%s escreveria %s com:\n' "$C_C" "$C_0" "$NUT_CONF"
+        printf '%s[dry ]%s would write %s with:\n' "$C_C" "$C_0" "$NUT_CONF"
         sed 's/^/      | /' "$tmp"
     else
-        # cat > preserva inode (dono/modo originais do pacote NUT).
+        # cat > keeps the inode (owner/mode from the NUT package).
         cat "$tmp" > "$NUT_CONF"
-        ok "seção [$name] gravada."
+        ok "section [$name] written."
     fi
     rm -f "$tmp"
 }
 
 wait_for_upsc() {
-    # Aguarda upsc responder com dados úteis. O chip recém-(re)plugado responde
-    # ZEROS até ~1Hz de polling rodar por alguns segundos — pollinterval=2
-    # resolve em ~1 min; por isso o timeout generoso e o unwedge no meio do caminho.
+    # Wait for upsc to answer with useful data. A freshly (re)plugged MEC0003
+    # answers ZEROS until it is polled at ~1 Hz for a few seconds —
+    # pollinterval=2 fixes it in ~1 min; hence the generous timeout and the
+    # unwedge halfway through.
     local name=$1 timeout=${2:-$UPSC_TIMEOUT} cycled=0 out deadline start
     start=$SECONDS
     deadline=$(( start + timeout ))
-    info "validando com upsc ${name}@localhost (até ${timeout}s — o chip pode precisar de aquecimento)..."
+    info "validating with upsc ${name}@localhost (up to ${timeout}s — the chip may need to warm up)..."
     while (( SECONDS < deadline )); do
         out="$(upsc "${name}@localhost" 2>/dev/null || true)"
         if [[ -n $out ]] \
@@ -234,7 +256,7 @@ wait_for_upsc() {
             return 0
         fi
         if (( ! cycled && SECONDS - start >= 30 )); then
-            warn "sem dados úteis após 30s — rodando ciclo authorized (destavamento do firmware USB)..."
+            warn "no useful data after 30s — running an authorized cycle (USB firmware unwedge)..."
             usb_cycle_authorized || true
             cycled=1
         fi
@@ -245,83 +267,108 @@ wait_for_upsc() {
 
 install_nut() {
     local packs
-    packs="$(battery_packs "$BATTERY")" || die "--battery inválida: $BATTERY (use 12 ou 24)."
-    step "Modo NUT — nutdrv_qx (subdriver hunnox, protocolo q1)"
-    [[ -d /etc/nut ]] || die "/etc/nut não existe — instale o NUT primeiro (pacman -S nut / apt install nut)."
+    packs="$(battery_packs "$BATTERY")" || die "invalid --battery: $BATTERY (use 12 or 24)."
+    [[ -n $DRV_NUT_DRIVER ]] || die "driver $DRIVER does not support nut mode (no nut_driver in driver.toml)."
+    step "NUT mode — driver $DRIVER ($DRV_NUT_DRIVER)"
+    [[ -d /etc/nut ]] || (( DRY_RUN )) || die "/etc/nut does not exist — install NUT first (pacman -S nut / apt install nut)."
     local upsc_bin
     upsc_bin="$(find_bin upsc || true)"
-    [[ -n $upsc_bin ]] || die "upsc não encontrado — instale o pacote NUT completo."
+    [[ -n $upsc_bin ]] || (( DRY_RUN )) || die "upsc not found — install the full NUT package."
 
     install_udev_rule
     write_upsconf_section "$UPS_NAME" "$packs"
 
-    step "(Re)iniciando nut-driver@${UPS_NAME}"
+    step "(Re)starting nut-driver@${UPS_NAME}"
     if (( DRY_RUN )); then
         run systemctl restart "nut-driver@${UPS_NAME}.service"
         run systemctl enable --now nut-server.service
-        info "(dry-run: pularia a validação upsc de até ${UPSC_TIMEOUT}s)"
+        info "(dry-run: would skip the upsc validation of up to ${UPSC_TIMEOUT}s)"
         return 0
     fi
     systemctl restart "nut-driver@${UPS_NAME}.service" \
-        || warn "restart do nut-driver@${UPS_NAME} falhou (ele existe? pacman -S nut / apt install nut)."
+        || warn "restart of nut-driver@${UPS_NAME} failed (does it exist? pacman -S nut / apt install nut)."
     systemctl enable --now nut-server.service 2>/dev/null \
-        || warn "não consegui habilitar nut-server.service — se o upsd já roda, ignore."
+        || warn "could not enable nut-server.service — if upsd is already running, ignore."
 
-    step "Validação (upsc ${UPS_NAME}@localhost)"
+    step "Validation (upsc ${UPS_NAME}@localhost)"
     if wait_for_upsc "$UPS_NAME"; then
-        ok "nobreak respondendo:"
+        ok "UPS answering:"
         upsc "${UPS_NAME}@localhost" | sed 's/^/      /'
-        local bv
-        bv="$(upsc "${UPS_NAME}@localhost" 2>/dev/null | awk -F': ' '/^battery\.voltage:/{print $2}' || true)"
-        if [[ -n $bv ]]; then
-            info "battery.voltage=$bv é POR CÉLULA — total ≈ $(awk -v v="$bv" -v p="$packs" 'BEGIN{printf "%.1f", v*p}')V (packs=$packs)."
-        fi
-        ok "INSTALAÇÃO NUT CONCLUÍDA. Teste: upsc ${UPS_NAME}@localhost"
+        ok "NUT INSTALL COMPLETE. Test: upsc ${UPS_NAME}@localhost"
     else
-        err "o nobreak não respondeu em ${UPSC_TIMEOUT}s. Checklist:"
-        info " - journalctl -u nut-driver@${UPS_NAME}.service -e   (veja o erro do driver)"
-        info " - sudo bash $0 --unwedge                        (destrava o firmware USB)"
-        info " - replug físico + aguarde ~1 min de aquecimento e rode novamente"
+        err "the UPS did not answer within ${UPSC_TIMEOUT}s. Checklist:"
+        info " - journalctl -u nut-driver@${UPS_NAME}.service -e   (see the driver error)"
+        info " - sudo bash $0 --driver $DRIVER --unwedge         (unwedges the USB firmware)"
+        info " - physical replug + wait ~1 min of warm-up and run again"
         exit 1
     fi
 }
 
 # =============================================================================
-# Modos standalone / mqtt
+# Core: autoheal (system timer) and guardian (user service)
 # =============================================================================
-install_standalone() { # $1 = pip extra (paho-mqtt p/ mqtt), $2 = unit, $3 = com-mqtt(0/1)
-    local extra_pip=$1 unit=$2 with_mqtt=$3
-    local -a pips=(pyusb hidapi)
-    if [[ -n $extra_pip ]]; then pips+=("$extra_pip"); fi
-    step "Modo $MODE — instalando driver Python em $INSTALL_DIR"
-    local src_py="$SCRIPT_DIR/mec0003.py"
-    if [[ ! -f $src_py ]]; then
-        if (( DRY_RUN )); then
-            warn "mec0003.py ainda não existe na raiz do repo — no modo real a instalação ABORTARIA aqui."
-        else
-            die "mec0003.py não encontrado em $src_py (ele está na raiz do repo?)."
-        fi
+install_autoheal() {
+    step "Core: autoheal (software USB replug when NUT loses the UPS)"
+    if [[ $DRV_AUTOHEAL != true ]]; then
+        info "driver $DRIVER has autoheal = false — skipping."
+        return 0
     fi
+    run install -m 0755 "$SCRIPT_DIR/core/autoheal/nobreak-autoheal" "$AUTOHEAL_BIN"
+    {
+        printf '# nobreak-omarchy autoheal config — generated by install.sh (driver %s)\n' "$DRIVER"
+        printf 'NOBREAK_VIDPID=%s\n' "$DRV_VIDPID"
+        printf 'NOBREAK_UPS=%s@localhost\n' "$UPS_NAME"
+        printf 'NOBREAK_NUT_UNIT=nut-driver@%s.service\n' "$UPS_NAME"
+    } | write_file "$AUTOHEAL_ENV" 0644
+    run install -m 0644 "$SCRIPT_DIR/core/autoheal/$AUTOHEAL_SERVICE" "/etc/systemd/system/$AUTOHEAL_SERVICE"
+    run install -m 0644 "$SCRIPT_DIR/core/autoheal/$AUTOHEAL_TIMER" "/etc/systemd/system/$AUTOHEAL_TIMER"
+    run systemctl daemon-reload
+    run systemctl enable --now "$AUTOHEAL_TIMER"
+    ok "autoheal timer enabled (logs: journalctl -t nobreak-autoheal)."
+}
+
+install_guardian() {
+    step "Core: guardian (desktop notifications on power events)"
+    run install -d -m 0755 "$KIT_LIB"
+    run install -m 0755 "$SCRIPT_DIR/core/guardian/guardian.py" "$KIT_LIB/guardian.py"
+    sed "s/--ups nobreak@localhost/--ups ${UPS_NAME}@localhost/" \
+        "$SCRIPT_DIR/core/guardian/$GUARDIAN_UNIT" | write_file "$GUARDIAN_UNIT_DST" 0644
+    if as_desktop_user systemctl --user daemon-reload \
+        && as_desktop_user systemctl --user enable --now "$GUARDIAN_UNIT"; then
+        ok "guardian enabled for user ${SUDO_USER}."
+    else
+        info "enable it as your desktop user: systemctl --user daemon-reload && systemctl --user enable --now $GUARDIAN_UNIT"
+    fi
+    info "events are logged to ~/.local/state/nobreak-omarchy/events.jsonl"
+}
+
+# =============================================================================
+# standalone / mqtt modes
+# =============================================================================
+install_standalone() { # $1 = pip extra (paho-mqtt for mqtt), $2 = unit, $3 = with-mqtt (0/1)
+    local extra_pip=$1 unit=$2 with_mqtt=$3
+    local -a pips=(pyusb pyserial hidapi)
+    if [[ -n $extra_pip ]]; then pips+=("$extra_pip"); fi
+    step "Mode $MODE — installing the $DRIVER Python driver into $INSTALL_DIR"
+    [[ -f $DRV_SCRIPT ]] || die "driver $DRIVER has no standalone driver.py ($DRV_SCRIPT) — use --mode nut."
 
     run install -d -m 0755 "$INSTALL_DIR"
-    if [[ -f $src_py ]]; then
-        run install -m 0755 "$src_py" "$INSTALL_DIR/mec0003.py"
-    fi
+    run install -m 0755 "$DRV_SCRIPT" "$INSTALL_DIR/driver.py"
     run python3 -m venv "$INSTALL_DIR/venv"
     run "$INSTALL_DIR/venv/bin/pip" install --upgrade pip
     run "$INSTALL_DIR/venv/bin/pip" install "${pips[@]}"
 
-    # Configuração MQTT (env lido pelo unit via EnvironmentFile=)
+    # MQTT config (env read by the unit via EnvironmentFile=)
     if [[ $with_mqtt == 1 ]]; then
-        step "Configuração MQTT ($ENV_FILE)"
+        step "MQTT config ($ENV_FILE)"
         local broker port prefix
-        ask "Broker MQTT (host)" localhost; broker=$REPLY
-        ask "Porta do broker" 1883; port=$REPLY
-        ask "Prefixo de tópico" nobreak/mec0003; prefix=$REPLY
+        ask "MQTT broker (host)" localhost; broker=$REPLY
+        ask "Broker port" 1883; port=$REPLY
+        ask "Topic prefix" "nobreak/$DRIVER"; prefix=$REPLY
         {
-            printf '# Configuracao do publicador MQTT — nobreak MEC0003\n'
-            printf '# Gerado por install.sh; lido por %s (EnvironmentFile=).\n' "$UNIT_MQTT"
-            printf '# O driver tambem aceita: NUT_ON_BATTERY_CMD=comando (roda ao entrar em bateria).\n'
+            printf '# MQTT publisher config — nobreak-omarchy driver %s\n' "$DRIVER"
+            printf '# Generated by install.sh; read by %s (EnvironmentFile=).\n' "$UNIT_MQTT"
+            printf '# The driver also accepts: NUT_ON_BATTERY_CMD=command (runs when going on battery).\n'
             printf 'MQTT_BROKER=%s\n' "$broker"
             printf 'MQTT_PORT=%s\n' "$port"
             printf 'MQTT_TOPIC_PREFIX=%s\n' "$prefix"
@@ -329,13 +376,13 @@ install_standalone() { # $1 = pip extra (paho-mqtt p/ mqtt), $2 = unit, $3 = com
         } | write_file "$ENV_FILE" 0640
     fi
 
-    step "Unit systemd ($unit)"
-    local unit_src="$SCRIPT_DIR/systemd/$unit"
-    [[ -r $unit_src ]] || die "unit ausente no repo: $unit_src"
+    step "systemd unit ($unit)"
+    local unit_src="$DRIVER_DIR/systemd/$unit"
+    [[ -r $unit_src ]] || die "unit missing in the driver: $unit_src"
     run install -m 0644 "$unit_src" "/etc/systemd/system/$unit"
     run systemctl daemon-reload
-    # O outro unit que fala com o chip precisa parar (Conflicts= cuida disso,
-    # mas desabilitamos explicitamente para não voltar no boot).
+    # NUT and the other unit must not talk to the chip at the same time.
+    run systemctl disable --now "nut-driver@${UPS_NAME}.service" 2>/dev/null || true
     if [[ $unit == "$UNIT_MQTT" ]]; then
         run systemctl disable --now "$UNIT_STANDALONE" 2>/dev/null || true
     else
@@ -347,56 +394,62 @@ install_standalone() { # $1 = pip extra (paho-mqtt p/ mqtt), $2 = unit, $3 = com
     fi
     sleep 2
     if systemctl is-active --quiet "$unit"; then
-        ok "serviço ativo. Logs: journalctl -u $unit -f"
+        ok "service active. Logs: journalctl -u $unit -f"
     else
-        warn "serviço não subiu ainda — veja: journalctl -u $unit -e"
+        warn "service is not up yet — see: journalctl -u $unit -e"
     fi
 }
 
 # =============================================================================
-# Instalação (padrão)
+# Install (default)
 # =============================================================================
 do_install() {
     require_root_or_dry
 
-    # Resolve o modo (interativo quando possível)
+    # Resolve the mode (interactive when possible)
     if [[ -z $MODE ]]; then
         if [[ -t 0 ]] && (( ! ASSUME_YES )); then
-            echo "Modos de instalação:"
-            echo "  1) nut        — NUT/nutdrv_qx (recomendado: integra com upsmon/monitoração)"
-            echo "  2) standalone — driver Python + systemd, sem NUT"
-            echo "  3) mqtt       — standalone + publicação MQTT"
-            ask "Escolha o modo" 1
+            echo "Install modes:"
+            echo "  1) nut        — NUT (recommended: guardian notifications + autoheal + upsmon)"
+            echo "  2) standalone — the driver's Python daemon + systemd, without NUT"
+            echo "  3) mqtt       — standalone + MQTT publishing (Home Assistant)"
+            ask "Pick a mode" 1
             case $REPLY in
                 1|nut) MODE=nut ;;
                 2|standalone) MODE=standalone ;;
                 3|mqtt) MODE=mqtt ;;
-                *) die "modo inválido: $REPLY (use nut, standalone ou mqtt)" ;;
+                *) die "invalid mode: $REPLY (use nut, standalone or mqtt)" ;;
             esac
         else
             MODE=nut
-            info "sem interatividade e sem --mode: assumindo modo padrão 'nut'."
+            info "non-interactive and no --mode: assuming default mode 'nut'."
         fi
     fi
-    case $MODE in nut|standalone|mqtt) ;; *) die "modo inválido: $MODE" ;; esac
-    [[ $UPS_NAME =~ ^[A-Za-z0-9_-]+$ ]] || die "nome de seção inválido: $UPS_NAME (use [A-Za-z0-9_-])"
-    [[ $BATTERY == 12 || $BATTERY == 24 ]] || die "--battery inválida: $BATTERY (use 12 ou 24)"
+    case $MODE in nut|standalone|mqtt) ;; *) die "invalid mode: $MODE" ;; esac
+    [[ $UPS_NAME =~ ^[A-Za-z0-9_-]+$ ]] || die "invalid section name: $UPS_NAME (use [A-Za-z0-9_-])"
+    [[ $BATTERY == 12 || $BATTERY == 24 ]] || die "invalid --battery: $BATTERY (use 12 or 24)"
 
-    # Pergunta a bateria onde o valor é usado (nut: battery.packs no ups.conf).
-    # Default 12V → 6 packs (battery.voltage do chip vem POR CÉLULA).
+    # Ask for the battery where it is used (nut: battery.packs in ups.conf).
     if [[ $MODE == nut ]] && (( ! ASSUME_YES )) && [[ -t 0 ]]; then
-        ask "Tensão da bateria do nobreak (12V → packs=6, 24V → packs=12)" "$BATTERY"
+        ask "UPS battery voltage (12V -> packs=6, 24V -> packs=12)" "$BATTERY"
         BATTERY=$REPLY
-        [[ $BATTERY == 12 || $BATTERY == 24 ]] || die "tensão inválida: $BATTERY (12 ou 24)."
+        [[ $BATTERY == 12 || $BATTERY == 24 ]] || die "invalid voltage: $BATTERY (12 or 24)."
     fi
 
-    step "Instalação nobreak-mec0003 — modo=$MODE bateria=${BATTERY}V seção=$UPS_NAME$([[ $DRY_RUN == 1 ]] && echo ' [DRY-RUN]')"
+    step "Installing $KIT_NAME — driver=$DRIVER mode=$MODE battery=${BATTERY}V section=$UPS_NAME$([[ $DRY_RUN == 1 ]] && echo ' [DRY-RUN]')"
     case $MODE in
-        nut)        install_nut ;;
+        nut)
+            install_nut
+            if (( WITH_AUTOHEAL )); then install_autoheal; fi
+            if (( WITH_GUARDIAN )); then install_guardian; fi
+            ;;
         standalone) install_udev_rule; install_standalone "" "$UNIT_STANDALONE" 0 ;;
         mqtt)       install_udev_rule; install_standalone "paho-mqtt" "$UNIT_MQTT" 1 ;;
     esac
-    ok "Concluído ($MODE)."
+    if [[ $MODE != nut ]]; then
+        info "guardian and autoheal need NUT (upsc) — they are only installed in --mode nut."
+    fi
+    ok "Done ($DRIVER, $MODE)."
 }
 
 # =============================================================================
@@ -405,35 +458,53 @@ do_install() {
 CMD="install"
 MODE=""
 BATTERY=12
-UPS_NAME="nobreak"
+UPS_NAME=""
+DRIVER_ARG="mec0003"
+WITH_GUARDIAN=1
+WITH_AUTOHEAL=1
 
 while (( $# )); do
     case $1 in
         --check)   CMD="check" ;;
         --unwedge) CMD="unwedge" ;;
+        --list-drivers) CMD="list" ;;
+        --driver)
+            [[ $# -ge 2 ]] || die "--driver needs a value (see --list-drivers)"
+            DRIVER_ARG=$2; shift ;;
+        --driver=*) DRIVER_ARG="${1#*=}" ;;
         --mode)
-            [[ $# -ge 2 ]] || die "--mode exige valor: nut|standalone|mqtt"
+            [[ $# -ge 2 ]] || die "--mode needs a value: nut|standalone|mqtt"
             MODE=$2; shift ;;
         --mode=*)   MODE="${1#*=}" ;;
+        --mqtt)     MODE=mqtt ;;
         --battery)
-            [[ $# -ge 2 ]] || die "--battery exige valor: 12 ou 24"
+            [[ $# -ge 2 ]] || die "--battery needs a value: 12 or 24"
             BATTERY=$2; shift ;;
         --battery=*) BATTERY="${1#*=}" ;;
         --name)
-            [[ $# -ge 2 ]] || die "--name exige valor (nome da seção do ups.conf)"
+            [[ $# -ge 2 ]] || die "--name needs a value (ups.conf section name)"
             UPS_NAME=$2; shift ;;
         --name=*)   UPS_NAME="${1#*=}" ;;
+        --no-guardian) WITH_GUARDIAN=0 ;;
+        --no-autoheal) WITH_AUTOHEAL=0 ;;
         --yes|-y)   ASSUME_YES=1 ;;
         --dry-run)  DRY_RUN=1 ;;
         -h|--help)  usage; exit 0 ;;
-        *) err "opção desconhecida: $1"; usage >&2; exit 2 ;;
+        *) err "unknown option: $1"; usage >&2; exit 2 ;;
     esac
     shift
 done
+
+if [[ $CMD == list ]]; then
+    list_drivers "$SCRIPT_DIR"
+    exit 0
+fi
+load_driver "$SCRIPT_DIR" "$DRIVER_ARG"
+UPS_NAME=${UPS_NAME:-$DRV_UPS_NAME}
 
 case $CMD in
     check)   do_check ;;
     unwedge) do_unwedge ;;
     install) do_install ;;
-    *)       err "comando desconhecido: $CMD"; exit 2 ;;
+    *)       err "unknown command: $CMD"; exit 2 ;;
 esac

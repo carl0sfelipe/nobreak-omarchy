@@ -1,206 +1,123 @@
-# nobreak-mec0003
+# nobreak-omarchy
 
-**Driver Linux completo para nobreaks com chip USB MEC0003 (`0001:0000`) — os "Fry's Electronics" do `lsusb`.**
+**Community UPS ("nobreak") support kit for [Omarchy](https://omarchy.org) — Arch Linux + Hyprland — and other systemd desktops. Driver-pluggable: MEC0003 is the first driver; yours can be next.**
 
-[![CI](https://github.com/carl0sfelipe/nobreak-mec0003/actions/workflows/ci.yml/badge.svg)](https://github.com/carl0sfelipe/nobreak-mec0003/actions/workflows/ci.yml)
-[![Licença: MIT](https://img.shields.io/badge/licen%C3%A7a-MIT-yellow.svg)](LICENSE)
+[![CI](https://github.com/carl0sfelipe/nobreak-omarchy/actions/workflows/ci.yml/badge.svg)](https://github.com/carl0sfelipe/nobreak-omarchy/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 
-Esse chip genérico está em nobreaks de dezenas de marcas no mundo inteiro
-(SMS, NHS, Powercool, DEXP, Hunnox, Eurocase…), não tem suporte pronto no
-Linux e faz o `nutdrv_qx` do NUT entrar em crash-loop. Este kit entrega:
-driver NUT configurado, driver Python standalone, bridge MQTT para
-Home Assistant, instalador com modo de destravamento e a referência
-completa do protocolo.
+[Português](README.pt-BR.md)
 
----
+Cheap UPSes are everywhere, and many of them barely work on Linux: odd USB
+chips, firmware that wedges, NUT configs nobody wrote down. nobreak-omarchy
+packages what it takes to make one *actually useful* on a Linux desktop —
+and makes it easy for the community to add the next UPS.
 
-## A história (como isso existe)
+## What the core gives you
 
-Em um dia — **2026-10-28** — um nobreak teimando em não funcionar:
+| Piece | What it does |
+|---|---|
+| **Power guardian** (`core/guardian`) | User service that watches the UPS via NUT and sends **desktop notifications** (mako/Hyprland, GNOME, KDE) on power outage, power restored and low battery. Logs every event as JSON lines to `~/.local/state/nobreak-omarchy/events.jsonl`. Optional hooks: `--on-cmd 'systemctl suspend'`. |
+| **USB autoheal** (`core/autoheal`) | System timer (every 2 min). If NUT loses the UPS for 2 checks in a row, it replugs the USB *by software*, escalating: `usbreset` → sysfs authorized cycle → xHCI controller rebind. Max 4 heals/hour. |
+| **NUT config** | Each driver ships a proven `ups.conf` section; the installer writes it idempotently (with backup) and validates with `upsc`. Works with `upsmon` for clean shutdowns. |
+| **MQTT / Home Assistant bridge** | Drivers with a standalone daemon can publish to MQTT with Home Assistant auto-discovery. |
+| **Installer** | `install.sh --check` (diagnostics, no root), `--driver <name>`, `--unwedge`, `--dry-run`; `uninstall.sh` to undo. |
 
-1. O nobreak aparecia no `lsusb` como `0001:0000 Fry's Electronics MEC0003`
-   e o `nutdrv_qx` do NUT entrava em **crash-loop**, martelando o
-   dispositivo a cada 2 s com o protocolo e o transporte errados.
-2. O firmware USB, frágil, **travava**: o dispositivo sumia e reaparecia
-   o tempo todo (3 reenumerações em 30 s no `dmesg`).
-3. Perícia em `udev`/`journalctl` → issues do NUT ([#1539][n1539],
-   [#2208][n2208]), a HCL e os projetos brasileiros [smsUps][smsups] e
-   [nobreakSMS][nobreaksms].
-4. **Agentes de IA** extrairam o protocolo completo do código-fonte aberto
-   existente; o [REA][rea] ("reverse engineer anything") inspecionou o
-   binário `nutdrv_qx` e confirmou a tabela de índices de string do
-   subdriver `hunnox` (evidência em [`docs/EVIDENCIA-REA.md`](docs/EVIDENCIA-REA.md)).
-5. A descoberta: o chip carrega comandos **Megatec ASCII dentro de
-   requisições de descritor de string USB** — o índice da string É o opcode
-   (`Q1`=0x03, `F`=0x0d, `I`=0x0c, bateria=0xf3), com langid fixo `0x0409`,
-   `wLength ≤ 102` e leituras intercaladas — o mesmo modo "MEGA(USB)" do
-   software Windows UPSmart.
-6. Correção aplicada ao vivo (`subdriver=hunnox` + `protocol=q1` +
-   `langid_fix` + `noscanlangid`), chip travado revivido por "replug"
-   via sysfs — e os valores acordaram dos zeros: **231,2 V na entrada,
-   219,8 V na saída, carga 8 %, status OL**.
+## Supported drivers
 
----
+| Driver | USB ID | Brands | NUT driver | Autoheal | Status |
+|---|---|---|---|---|---|
+| [`mec0003`](drivers/mec0003/) | `0001:0000` ("Fry's Electronics MEC0003") | SMS, NHS, Powercool, DEXP, Hunnox, Eurocase, CPC | `nutdrv_qx` (hunnox) | yes | tested live 2026-10-28: on-battery telemetry verified, autoheal verified |
+| *yours?* | | | | | see [Add your UPS](#add-your-ups) |
 
-## Como saber se meu nobreak é compatível
+Check yours: `lsusb` and look for the USB ID.
+
+## Quickstart
 
 ```console
-$ lsusb | grep 0001:0000
-Bus 001 Device 005: ID 0001:0000 Fry's Electronics MEC0003
-```
-
-É isso: se aparecer `0001:0000` (o `lsusb` mostra "Fry's Electronics" porque
-esse vendor ID genérico está registrado assim no usb.ids), seu nobreak usa o
-chip MEC0003 e este projeto é para você. A nota acima sobre "Fry's
-Electronics" é só uma curiosidade do banco de IDs — seu nobreak não veio de
-nenhuma loja Fry's.
-
-## Quickstart (30 segundos)
-
-```console
-$ git clone https://github.com/carl0sfelipe/nobreak-mec0003.git
-$ cd nobreak-mec0003
-$ bash install.sh --check      # diagnóstico: acha o nobreak, checa NUT e dependências
-$ sudo bash install.sh         # instala o kit NUT (config + udev + serviços)
+$ git clone https://github.com/carl0sfelipe/nobreak-omarchy.git
+$ cd nobreak-omarchy
+$ bash install.sh --check                    # diagnostics: finds the UPS, checks NUT and deps
+$ sudo bash install.sh --driver mec0003      # NUT config + udev + autoheal + guardian
 $ upsc nobreak@localhost
+$ python3 core/guardian/guardian.py --dry-run   # see the notifications
 ```
 
-Se o seu `nutdrv_qx` já estava travando o dispositivo, o instalador detecta e
-desbloqueia com um ciclo "authorized" no sysfs (replug por software). Saída
-real após a instalação:
+Requirements: `nut`, `python3`, `libnotify` (`notify-send`), systemd.
+On Omarchy/Arch: `sudo pacman -S nut libnotify`.
+
+Useful flags: `--battery 12|24`, `--name <ups>`, `--mode nut|standalone|mqtt`,
+`--no-guardian`, `--no-autoheal`, `--list-drivers`, `--dry-run`.
+
+### The guardian
 
 ```console
-$ upsc nobreak@localhost
-battery.voltage: 2.22
-input.voltage: 230.9
-output.voltage: 219.8
-ups.load: 8
-ups.status: OL
-ups.temperature: 27.0
+$ systemctl --user status nobreak-guardian
+$ tail -f ~/.local/state/nobreak-omarchy/events.jsonl
+{"ts": "...", "event": "power_outage", "ups_status": "OB", "input_v": 0.0, ...}
 ```
 
-(Captura completa: [`docs/capturas/2026-10-28-upsc-funcionando.txt`](docs/capturas/2026-10-28-upsc-funcionando.txt))
+Events: `monitoring_started`, `power_outage`, `power_restored`,
+`battery_low`, `status_change`, `ups_not_responding`.
 
-### Sem NUT: driver standalone
+CLI: `guardian.py [--ups nobreak@localhost] [--interval 5] [--once] [--dry-run] [--on-cmd CMD] [--restore-cmd CMD]`.
+
+> **Migrating from nobreak-mec0003:** the guardian used to log to
+> `~/.local/state/nobreak-mec0003/eventos.jsonl` with Portuguese event names
+> (`falta_de_luz`, `energia_volvou`, `bateria_baixa`, `inicio_monitoramento`…).
+> It now writes `~/.local/state/nobreak-omarchy/events.jsonl` with English
+> names and the key `event` instead of `evento`. The old file is left alone —
+> keep it as history or move it. The unit is now `nobreak-guardian.service`
+> (was `nobreak-guardiao.service`) and autoheal is `nobreak-autoheal`
+> (was `nobreak-autocura`); the old `--intervalo`, `--forcar` and `--nivel`
+> flags are still accepted.
+
+### Autoheal
 
 ```console
-$ python3 mec0003.py --watch    # uma leitura por segundo, reabre sozinho após travamento
-$ python3 mec0003.py --json     # para scripts
-$ python3 mec0003.py --info     # fabricante / modelo / firmware
-$ python3 mec0003.py --battery  # carga da bateria em %
-$ python3 mec0003.py --ratings  # valores nominais (F)
+$ systemctl list-timers nobreak-autoheal.timer
+$ journalctl -t nobreak-autoheal
+$ sudo nobreak-autoheal --force          # heal now
 ```
 
-Três transportes, se um não pegar no seu modelo:
-`--method string` (padrão, modo UPSmart), `--method setreport`
-(túnel HID clássico) e `--method serial` (protocolo binário SMS,
-2400 baud 8N1, para os modelos de cabo serial).
+Configured by `/etc/nobreak-omarchy/autoheal.env` (written by the installer):
+`NOBREAK_VIDPID` (default `0001:0000`), `NOBREAK_UPS` (default
+`nobreak@localhost`), `NOBREAK_NUT_UNIT` (default `nut-driver@<ups>.service`).
+"Healthy" means `upsc` answers and input or output voltage is above 0.
 
-### Home Assistant / MQTT
-
-```console
-$ sudo bash install.sh --mqtt   # instala e habilita o serviço da bridge
-$ systemctl status nobreak-mec0003-mqtt
-```
-
-A bridge publica os valores em MQTT com **auto-discovery** do Home
-Assistant: sensores de tensão, carga, bateria, temperatura e status aparecem
-sozinhos, sem YAML.
-
-## O que você ganha
-
-| Dado | Variável NUT | Exemplo real |
-|---|---|---|
-| Tensão de entrada | `input.voltage` | 230,9 V |
-| Tensão de saída | `output.voltage` | 219,8 V |
-| Carga (consumo) | `ups.load` | 8 % |
-| Tensão da bateria | `battery.voltage` | 2,22 V/célula (ver abaixo) |
-| Carga da bateria | `battery.charge` | 100 % |
-| Temperatura | `ups.temperature` | 27,0 °C |
-| Status | `ups.status` | `OL` (rede OK) / `OB` (na bateria) / `LB` (bateria baixa) |
-| Autonomia estimada | `battery.runtime` | via `runtimecal` no `ups.conf` |
-
-Com `upsmon` configurado, você ganha desligamento limpo do servidor quando
-faltar energia — que é o motivo de existir de um nobreak.
-
-## Solução de problemas
-
-| Sintoma | Causa | Soluções |
-|---|---|---|
-| Todos os valores zerados | Falta a sequência de "aquecimento" (o firmware devolve zeros até alguém replicar o handshake do UPSmart) | Rode o driver/instalador por completo (ele faz o warm-up); se persistir, faça replug físico |
-| Dispositivo some e reaparece no `lsusb` | Firmware travado (crash-loop de driver antigo) | `bash install.sh --unwedge` (ciclo "authorized" via sysfs) ou replug físico; depois use a config do kit |
-| `Input/Output Error` no NUT | Varredura de langid ou transporte errado | `ups.conf` do kit: `subdriver=hunnox`, `protocol=q1`, `langid_fix=0x0409`, `noscanlangid` |
-| Frequência sempre 50,0 Hz (num país 60 Hz) | O firmware **mente** — reporta 50,0 fixo | Ignore o valor; é um defeito conhecido do firmware, não do driver |
-| `battery.voltage: 2.22` parece errado | O firmware reporta tensão **por célula** (2,22 V = float de chumbo-ácido por célula) | Bateria de 12 V = 6 células: `override.battery.packs = 6` + `battery_voltage_reports_one_pack` no `ups.conf` (o driver multiplica) |
-| NUT volta a travar depois de um tempo | Config antiga sem `subdriver=hunnox` — o transporte errado derruba o firmware | Use a config do kit: com hunnox, `pollinterval = 2` é seguro e mantém os valores acordados (~1 Hz, como o UPSmart) |
-
-**Importante:** nunca envie os índices de string `0x68`/`0x69` para o chip —
-eles **desligam o nobreak**. O driver e a config do kit nunca os usam.
-
-## Como funciona
-
-1. O software (driver Python ou NUT `nutdrv_qx`/hunnox) abre o dispositivo
-   `0001:0000` via libusb (regra udev dá acesso sem root).
-2. Em vez de HID normal, manda o comando Megatec **como um
-   `GET_DESCRIPTOR` de string**: o índice da string é o opcode.
-3. O chip MEC0003 responde o descritor em UTF-16LE; convertemos para ASCII.
-4. Uma sequência de aquecimento + leituras intercaladas F/Q1/I mantém o
-   firmware "acordado" (é o que o UPSmart faz).
-5. O parsing Megatec vira variáveis NUT / JSON / MQTT — e o `upsmon`,
-   Home Assistant etc. passam a enxergar o nobreak.
+## Repository layout
 
 ```
-+------------------+   GET_DESCRIPTOR(STRING), índice = opcode   +-----------+
-| mec0003.py  ou   |   Q1 -> 0x03 | F -> 0x0d | I -> 0x0c        |  MEC0003  |
-| NUT nutdrv_qx    | ------------------------------------------->|  (USB)    |
-| (subdrv hunnox)  |<--------------------------------------------|           |
-+------------------+    resposta UTF-16LE -> ASCII (Megatec)     +-----+-----+
-      |                                                            |
-      v                                                            v
-upsc / upsmon / MQTT / Home Assistant                    firmware Megatec (Q1/F/I)
+core/guardian/     power guardian (user service, notifications)
+core/autoheal/     USB autoheal script + systemd timer
+drivers/<name>/    one directory per UPS: driver.toml, nut/ups.conf, udev/, README, tests
+drivers/_template/ skeleton for a new driver
+install.sh         installer (--driver, --check, --unwedge, --dry-run)
+uninstall.sh       uninstaller
+tests/             core tests
 ```
 
-A referência completa (bytes, checksums, os dois protocolos, os perigos)
-está em [`docs/PROTOCOLO.md`](docs/PROTOCOLO.md). O report descriptor HID de
-624 bytes do chip é uma isca: nenhum software usa os usages dele.
+## Add your UPS
 
-## Compatibilidade
+Got a UPS that is not in the table? You can add it — no Python required if
+NUT already speaks to it with the right options:
 
-Chip `0001:0000` / produto "MEC0003". Marcas onde o chip já foi encontrado:
+1. `cp -r drivers/_template drivers/<name>` and fill `driver.toml`.
+2. Put the working NUT section in `drivers/<name>/nut/ups.conf`.
+3. Capture evidence: `lsusb -v`, and `upsc` **on mains and on battery**.
+4. Open a PR.
 
-SMS · NHS · Powercool · DEXP · Hunnox · Eurocase · CPC
+Full guide: [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Funcionou com o seu modelo?** Abra uma issue (ou PR editando esta lista)
-adicionando marca/modelo — é assim que a lista cresce. Os modelos de cabo
-serial da SMS (chip Cypress `04b4:5500`) também são suportados via
-`--method serial`.
+## The MEC0003 story
 
-## Créditos
+The project started with one stubborn UPS: a generic MEC0003 chip that made
+NUT crash-loop and wedged its own USB firmware. A day of forensics, NUT
+issues, old Brazilian SMS projects, AI agents and [REA](https://github.com/morluto/rea)
+(reverse engineering of the `nutdrv_qx` binary) found the trick: Megatec
+commands tunneled in USB string descriptors. The full story, the quirks and
+the protocol are in [`drivers/mec0003/`](drivers/mec0003/README.md).
 
-Este projeto é uma camada de conveniência em cima de muita gente que
-quebrou esse protocolo antes:
+## License
 
-- [NUT — Network UPS Tools](https://networkupstools.org/) e os subdrivers
-  `hunnox`/`krauler` do `nutdrv_qx`; issues [#1539][n1539], [#2208][n2208] e
-  [#1326][n1326] documentaram o comportamento do chip.
-- [dmslabsbr/smsUps][smsups] e [petersenna/nobreakSMS][nobreaksms] —
-  projetos brasileiros que decifraram o protocolo binário serial da SMS.
-- **UPSmart** (software Windows do fabricante) — referência de engenharia
-  reversa: o modo "MEGA(USB)" dele é o transporte que este driver replica.
-- [REA — Reverse Engineer Anything][rea] — usado para inspecionar o binário
-  `nutdrv_qx` e confirmar a tabela de índices (ver
-  [`docs/EVIDENCIA-REA.md`](docs/EVIDENCIA-REA.md)).
-
-[n1539]: https://github.com/networkupstools/nut/issues/1539
-[n2208]: https://github.com/networkupstools/nut/issues/2208
-[n1326]: https://github.com/networkupstools/nut/issues/1326
-[smsups]: https://github.com/dmslabsbr/smsUps
-[nobreaksms]: https://github.com/petersenna/nobreakSMS
-[rea]: https://github.com/morluto/rea
-
-## Licença
-
-[MIT](LICENSE) — feito com agentes de IA (ZCode + [REA][rea]) em um dia de
-diagnóstico. A história completa, em formato de post, está em
-[`docs/POST-LANCAMENTO.md`](docs/POST-LANCAMENTO.md).
+[MIT](LICENSE). Launch notes: [`docs/LAUNCH.md`](docs/LAUNCH.md).

@@ -1,0 +1,15 @@
+# nobreak-omarchy driver metadata — read by install.sh --driver mec0003
+name = "mec0003"
+description = "Generic MEC0003 USB UPS chip (SMS, NHS, Powercool, DEXP, Hunnox, Eurocase, CPC)"
+vid_pid = "0001:0000"
+usb_product = "MEC0003"
+# NUT driver used in nut/ups.conf ("" if the driver is standalone-only)
+nut_driver = "nutdrv_qx"
+# Default NUT section name written to /etc/nut/ups.conf
+ups_name = "nobreak"
+# Whether core/autoheal may unplug/replug this device by software
+autoheal = true
+# Install modes this driver supports
+modes = ["nut", "standalone", "mqtt"]
+status = "tested live 2026-10-28: on-battery telemetry verified, autoheal verified"
+maintainer = "carl0sfelipe"

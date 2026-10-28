@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# nobreak-autoheal — software "unplug and replug" of the UPS USB device, as an
+# escalation ladder (driver-generic; part of nobreak-omarchy core):
+#   1) usbreset            (USB reset of the device)
+#   2) authorized cycle    (disable/enable the device in sysfs)
+#   3) rebind of the whole xHCI controller (= physical replug of everything
+#      on it; keyboard/mouse on the same controller blink for ~2 s)
+# After each level: restart the NUT driver unit and wait for upsc to answer.
+#
+#   nobreak-autoheal              check; act only if NUT has no data
+#                                 (2 failed checks in a row, max 4 heals/hour)
+#   nobreak-autoheal --force      act now
+#   nobreak-autoheal --level N    act now, starting at level N
+#
+# Configuration (environment, or flags --vidpid/--ups/--unit):
+#   NOBREAK_VIDPID    USB VID:PID of the UPS        (default 0001:0000)
+#   NOBREAK_UPS       NUT UPS name for upsc         (default nobreak@localhost)
+#   NOBREAK_NUT_UNIT  NUT driver systemd unit       (default nut-driver@<ups>.service)
+#
+# Healthy = upsc answers with ups.status and input or output voltage > 0.
+set -u
+VIDPID=${NOBREAK_VIDPID:-0001:0000}
+UPS=${NOBREAK_UPS:-nobreak@localhost}
+UNIT=${NOBREAK_NUT_UNIT:-}
+
+INI=1; FORCE=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --force|--forcar) FORCE=1;;
+    --level|--nivel) FORCE=1; INI=${2:-1}; shift;;
+    --vidpid) VIDPID=${2:-$VIDPID}; shift;;
+    --ups) UPS=${2:-$UPS}; shift;;
+    --unit) UNIT=${2:-$UNIT}; shift;;
+    -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
+    *) echo "nobreak-autoheal: unknown option: $1" >&2; exit 2;;
+  esac
+  shift
+done
+[ -n "$UNIT" ] || UNIT="nut-driver@${UPS%%@*}.service"
+
+STATE=/run/nobreak-autoheal; mkdir -p "$STATE"
+log(){ echo "nobreak-autoheal: $*"; logger -t nobreak-autoheal -- "$*"; }
+
+healthy(){ # upsc answers and input or output voltage is not zero
+  local o; o=$(timeout 5 upsc "$UPS" 2>/dev/null) || return 1
+  echo "$o" | grep -qE '^ups.status: ' || return 1
+  echo "$o" | awk -F': ' '$1=="output.voltage"||$1=="input.voltage"{if($2+0>0)ok=1} END{exit !ok}'
+}
+devpath(){ for d in /sys/bus/usb/devices/*; do
+  [ "$(cat "$d/idVendor" 2>/dev/null):$(cat "$d/idProduct" 2>/dev/null)" = "$VIDPID" ] && { echo "$d"; return; }; done; }
+wait_nut(){ systemctl restart "$UNIT" 2>/dev/null; local i
+  for i in $(seq 1 8); do sleep 5; healthy && return 0; done; return 1; }
+
+level1(){ log "level 1: usbreset $VIDPID"; usbreset "$VIDPID" >/dev/null 2>&1; sleep 3; }
+level2(){ local d; d=$(devpath); [ -n "$d" ] || { log "level 2: device is gone from USB"; return; }
+  log "level 2: authorized cycle on $d"; echo 0 > "$d/authorized"; sleep 3; echo 1 > "$d/authorized"; sleep 4; }
+level3(){ local d pci; d=$(devpath)
+  [ -n "$d" ] || d=$(cat "$STATE/last-dev" 2>/dev/null)
+  pci=$(readlink -f "$d" | grep -oE '[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]' | tail -1)
+  [ -n "$pci" ] || pci=$(cat "$STATE/last-pci" 2>/dev/null)
+  [ -n "$pci" ] || { log "level 3: could not find the controller"; return; }
+  log "level 3: rebind of xHCI controller $pci"
+  echo "$pci" > /sys/bus/pci/drivers/xhci_hcd/unbind; sleep 3
+  echo "$pci" > /sys/bus/pci/drivers/xhci_hcd/bind; sleep 6; }
+
+# remember where the device lives (so level 3 finds the controller even if it vanishes)
+d=$(devpath); [ -n "$d" ] && { echo "$d" > "$STATE/last-dev"
+  readlink -f "$d" | grep -oE '[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]' | tail -1 > "$STATE/last-pci"; }
+
+if [ $FORCE -eq 0 ]; then
+  if healthy; then rm -f "$STATE/failures"; exit 0; fi
+  n=$(( $(cat "$STATE/failures" 2>/dev/null || echo 0) + 1 )); echo $n > "$STATE/failures"
+  [ $n -lt 2 ] && { log "NUT has no data (1st check); waiting for the next one"; exit 0; }
+  # at most 4 heals per hour
+  find "$STATE" -name 'heal-*' -mmin +60 -delete
+  [ "$(ls "$STATE"/heal-* 2>/dev/null | wc -l)" -ge 4 ] && { log "limit of 4 heals/hour reached; not acting"; exit 1; }
+fi
+touch "$STATE/heal-$(date +%s)"
+for n in 1 2 3; do
+  [ $n -lt "$INI" ] && continue
+  level$n
+  if wait_nut; then log "OK: NUT is back after level $n"; rm -f "$STATE/failures"; exit 0; fi
+done
+log "FAILED: no level brought NUT back (needs a physical replug)"; exit 1

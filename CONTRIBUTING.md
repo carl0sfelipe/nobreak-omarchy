@@ -1,74 +1,107 @@
-# Contribuindo
+# Contributing to nobreak-omarchy
 
-Contribuições são muito bem-vindas — em **português ou inglês**, como preferir.
-Este projeto existe porque muita gente tem um nobreak "MEC0003" sem suporte;
-cada modelo confirmado e cada descoberta de protocolo ajuda outra pessoa.
+Contributions are very welcome — issues and PRs in **English or
+Portuguese**. This project exists because lots of people own a UPS
+("nobreak") with poor Linux support; every confirmed model and every
+protocol finding helps someone else.
 
-## O que mais falta (e você pode dar)
+## Ways to help
 
-1. **Modelos confirmados** — rodou em um nobreak que não está na lista de
-   compatibilidade do `README.md`? Conte-nos (issue ou PR).
-2. **Frames capturados** — respostas cruas do seu dispositivo (Q1/F/I/BL)
-   viram fixtures de teste em `tests/frames/` e ajudam a cobrir variações de
-   firmware.
-3. **Descobertas de protocolo** — comandos extras do seu modelo específico
-   (calibração, teste de bateria, beep) documentados em `docs/PROTOCOLO.md`.
+1. **Add a driver** for a UPS that is not supported yet (below).
+2. **Confirm a model** for an existing driver — open an issue titled
+   `Model: <brand> <model> (<driver>)` with `lsusb` and `upsc` output.
+3. **Captured frames** — raw answers from your device become test fixtures
+   (`drivers/<name>/tests/frames/`).
+4. **Core improvements** — guardian, autoheal, installer.
 
-## Reportando um modelo compatível
+## Adding a driver
 
-Abra uma issue com o título `Modelo: <marca> <modelo>` e inclua:
+A "driver" in nobreak-omarchy is a directory under `drivers/` that tells the
+kit how to talk to one family of UPS. Most of the time that is just a NUT
+config — no code needed.
+
+1. **Copy the template**
+
+   ```console
+   $ cp -r drivers/_template drivers/<name>     # lowercase, [a-z0-9_-]
+   ```
+
+2. **Fill `driver.toml`**: `name`, `vid_pid` (from `lsusb`), `nut_driver`,
+   `ups_name`, `autoheal` (`true` only if you verified that a software
+   replug recovers it), `modes`, `status`, `maintainer` (your GitHub handle).
+
+3. **Provide the NUT config** in `drivers/<name>/nut/ups.conf` — the section
+   that works for you, every non-obvious option explained in a comment.
+   `install.sh --driver <name>` copies it to `/etc/nut/ups.conf`. If NUT
+   cannot drive it, ship a standalone `driver.py` + units in `systemd/`
+   (see `drivers/mec0003/` for an example) and set `nut_driver = ""`.
+
+4. **Capture evidence** into `drivers/<name>/captures/` (strip serial numbers):
+
+   ```console
+   $ lsusb -v -d <vid>:<pid>       > captures/lsusb-v.txt
+   $ upsc nobreak@localhost        > captures/upsc-mains.txt     # on mains
+   # unplug the UPS from the wall for ~30 s:
+   $ upsc nobreak@localhost        > captures/upsc-battery.txt   # on battery
+   ```
+
+   Both mains **and** battery captures are required: many quirks (LB flag,
+   charge estimate, status bits) only show up on battery.
+
+5. **Add tests from real frames** if you ship any parser
+   (`drivers/<name>/tests/`, pytest, no hardware). Never synthesize a frame
+   you have not seen on a real device.
+
+6. **Write `drivers/<name>/README.md`**: compatibility (`lsusb` ID), status,
+   known quirks, install line.
+
+7. **Add a row** to the supported-drivers table in `README.md` and
+   `README.pt-BR.md`.
+
+Test your install path without touching the system:
 
 ```console
-$ lsusb | grep 0001:0000
-$ upsc nobreak@localhost        # se funcionou via NUT
-$ python3 mec0003.py --info --json   # se funcionou via driver standalone
+$ bash install.sh --driver <name> --dry-run --yes
+$ bash install.sh --driver <name> --check
 ```
 
-Mais o que ajudou (ou atrapalhou): método usado (`string`, `setreport`,
-`serial`), linha do `ups.conf`, e se precisou de `--unwedge`.
+## Safety rules for protocol work
 
-Para adicionar direto à tabela de compatibilidade, edite a seção
-"Compatibilidade" do `README.md` **e** do `README.en.md` no mesmo PR.
+- Never send commands you have not seen documented or captured. On the
+  MEC0003, string indices `0x68`/`0x69` **shut the UPS down**; other chips
+  have similar traps. A "curious" scan can kill your equipment and that of
+  whoever copies your code.
+- Do not query the device directly while NUT is polling it (concurrent
+  access wedges fragile firmware).
+- Document every new command with its source (capture, test, reference code).
 
-## Política de testes
+Tip: if you have the vendor's Windows software (UPSmart, "Manager III",
+PowerView), [REA](https://github.com/morluto/rea) can extract the protocol
+from the binary — see `drivers/mec0003/EVIDENCE-REA.md`.
 
-- Toda mudança de **parsing** (Q1, F, I, BL, frames SMS binários) deve vir
-  acompanhada de teste com frame real colocado em `tests/frames/`.
-- Testes de parsing são puros (sem hardware): `python3 -m pytest` roda no CI
-  (`ci.yml`) em Python 3.10+.
-- Mudanças que tocam o transporte USB devem ser testadas **contra o hardware
-  real** por quem escreveu — o CI não tem nobreak plugado. Diga qual
-  marca/modelo você testou no PR.
-- `install.sh`/`uninstall.sh` devem passar em `bash -n` (sintaxe) e, sempre
-  que possível, em shellcheck.
+## Code style
 
-## Descobrindo coisas novas do protocolo
+- Python 3.10+, standard library first; driver dependencies go in
+  `requirements.txt` and must be optional for the tests (keep parsers
+  importable without `pyusb`).
+- Shell: bash, `set -euo pipefail` in entry points, must pass `bash -n` and
+  ideally `shellcheck -x`. Reuse `scripts/lib.sh` helpers (`run`, `ok`,
+  `warn`, `die`, dry-run aware).
+- Everything user-facing (logs, notifications, CLI help) in English.
+- Commit messages descriptive, no emoji.
 
-Leia `docs/PROTOCOLO.md` antes — muita coisa já está mapeada, incluindo as
-armadilhas. Regras de segurança **obrigatórias**:
+## PR checklist
 
-- **Nunca** envie índices de string `0x68`/`0x69` (desligam o nobreak) nem
-  índices não documentados sem evidência prévia (uma varredura "curiosa" pode
-  derrubar o seu equipamento e o da pessoa que copiar seu código).
-- Mantenha `wLength <= 102` e langid fixo `0x0409` no canal de comandos.
-- Documente qualquer comando novo em `docs/PROTOCOLO.md` com a fonte
-  (captura, teste, código de referência).
+- [ ] `.venv-test/bin/python -m pytest -q` (or `pytest -q`) passes
+- [ ] `bash -n install.sh uninstall.sh scripts/lib.sh core/autoheal/nobreak-autoheal`
+- [ ] `bash install.sh --driver <name> --dry-run --yes` looks right
+- [ ] new driver: `driver.toml`, `nut/ups.conf`, `README.md`, captures on mains **and** battery
+- [ ] tested on real hardware — say which brand/model in the PR
+- [ ] READMEs (EN + pt-BR) updated if behavior changed
+- [ ] **no secrets**: no MQTT passwords, tokens, hostnames you care about,
+      serial numbers or `.env` files in the commit
 
-Dica: se você tem o CD/instalador Windows que veio com o nobreak (UPSmart,
-"Manager III", PowerView), o [REA](https://github.com/morluto/rea) consegue
-extrair o protocolo exatamente do binário do fabricante — foi assim que
-validamos a tabela de índices do subdriver `hunnox` (ver
-`docs/EVIDENCIA-REA.md`).
+## License
 
-## Estilo
-
-- Python 3.10+, sem dependências obrigatórias além de `requirements.txt`
-  (mantenha o core importável sem `pyusb` para os testes rodarem no CI).
-- Commits e PRs em PT ou EN, mensagem descritiva (sem emoji, por favor).
-- Ao mudar comportamento visível, atualize `README.md` e `README.en.md`
-  juntos — os dois devem dizer a mesma coisa.
-
-## Licença
-
-Ao contribuir, você concorda que sua contribuição é licenciada sob a MIT
-(ver `LICENSE`).
+By contributing you agree that your contribution is licensed under MIT
+(see `LICENSE`).

@@ -1,8 +1,9 @@
 # =============================================================================
-# ci.yml — Integração contínua do kit nobreak-mec0003
+# ci.yml — continuous integration of nobreak-omarchy
 #
-# shell job : shellcheck em todos os .sh + bash -n (sintaxe) em todos os .sh
-# python job: pytest (tests/) + selftest do driver (mec0003.py --selftest)
+# shell job : shellcheck on every .sh + bash -n (syntax) on every shell script
+#             (including core/autoheal/nobreak-autoheal)
+# python job: pytest (core tests/ + drivers/*/tests) + each driver's --selftest
 # =============================================================================
 name: CI
 
@@ -18,32 +19,33 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Instalar shellcheck
+      - name: Install shellcheck
         run: sudo apt-get update -q && sudo apt-get install -y -q shellcheck
 
-      - name: shellcheck em todos os .sh (install.sh, uninstall.sh, scripts/lib.sh)
+      - name: shellcheck on every .sh (install.sh, uninstall.sh, scripts/lib.sh)
         run: |
           mapfile -d '' shfiles < <(find . -name '*.sh' -print0)
           if (( ${#shfiles[@]} == 0 )); then
-            echo "::error::nenhum .sh encontrado — erro no checkout?"
+            echo "::error::no .sh found — checkout problem?"
             exit 1
           fi
           ec=0
           for f in "${shfiles[@]}"; do
             echo "::group::shellcheck -x $f"
-            # -x: segue o "source=" e análise também o scripts/lib.sh
+            # -x: follows "source=" and also analyzes scripts/lib.sh
             shellcheck -x "$f" || ec=1
             echo "::endgroup::"
           done
           exit "$ec"
 
-      - name: bash -n (validação de sintaxe) em todos os .sh
+      - name: bash -n (syntax check) on every shell script
         run: |
           find . -name '*.sh' -print0 | xargs -0 -n1 bash -n
+          bash -n core/autoheal/nobreak-autoheal
           echo "bash -n: OK"
 
   python:
-    name: Python 3.11 (pytest + selftest)
+    name: Python 3.11 (pytest + driver selftests)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -54,26 +56,19 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Instalar dependências (pytest pyusb pyserial)
+      - name: Install dependencies (pytest pyusb pyserial)
         run: |
           python -m pip install --upgrade pip
           pip install pytest pyusb pyserial
 
-      - name: Testes (pytest tests/ -q)
-        run: |
-          # Guarda: enquanto tests/ não tiver testes (repo em montagem),
-          # pytest devolve 5 (no tests collected) — não é erro aqui.
-          if compgen -G 'tests/test_*.py' > /dev/null; then
-            pytest tests/ -q
-          else
-            echo "::warning::tests/ ainda não tem testes — nada a rodar."
-          fi
+      - name: Tests (core + drivers)
+        run: pytest -q
 
-      - name: Selftest do driver (mec0003.py --selftest)
+      - name: Driver selftests (drivers/*/driver.py --selftest)
         run: |
-          if [[ -f mec0003.py ]]; then
-            python mec0003.py --selftest
-          else
-            echo "::error::mec0003.py não encontrado na raiz do repo."
-            exit 1
-          fi
+          for d in drivers/*/driver.py; do
+            [[ $d == drivers/_* ]] && continue
+            echo "::group::$d --selftest"
+            python "$d" --selftest
+            echo "::endgroup::"
+          done

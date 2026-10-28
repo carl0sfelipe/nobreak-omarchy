@@ -1,0 +1,4 @@
+# Optional: only needed if the NUT driver or your standalone driver accesses
+# the device raw via libusb and the default permissions are not enough.
+# Rename to 99-nobreak-<name>.rules (install.sh installs the first *.rules).
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0000", ATTRS{idProduct}=="0000", MODE="0664", GROUP="nut"
