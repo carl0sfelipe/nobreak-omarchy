@@ -1,0 +1,6 @@
+[Unit]
+Description=Autocura do USB do nobreak (tira e bota por software se o NUT ficar sem dados)
+After=nut-driver@nobreak.service
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/nobreak-autocura
