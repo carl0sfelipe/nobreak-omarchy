@@ -1,0 +1,17 @@
+# 99-nobreak-mec0003.rules — permissões USB para nobreaks com chip MEC0003
+#
+# Chip: VID 0001 / PID 0000, string de produto "MEC0003" (SMS, NHS, Powercool,
+# CPC, DEXP, Hunnox, Eurocase…). O firmware não implementa HID de verdade — o
+# acesso é raw via libusb (nutdrv_qx subdriver hunnox ou mec0003.py), então o
+# nó do dispositivo em /dev/bus/usb precisa ficar acessível ao grupo do driver.
+#
+# Grupo: o Arch usa "nut" e o Debian/Ubuntu TAMBÉM usa "nut" (ambos criam o
+# grupo ao instalar o pacote NUT). Se na máquina de destino o grupo nut não
+# existir, o install.sh reescreve esta linha no arquivo instalado em
+# /etc/udev/rules.d/ usando o grupo "plugdev" (padrão Debian para dispositivos
+# locais). Este arquivo do repo é o MODELO — quem instala é o install.sh.
+#
+# Não use o usbhid deste dispositivo: o driver do kernel estrapola o report
+# descriptor e atrapalha o acesso raw (o acessório de instalador cuida do resto).
+
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0001", ATTRS{idProduct}=="0000", MODE="0664", GROUP="nut"

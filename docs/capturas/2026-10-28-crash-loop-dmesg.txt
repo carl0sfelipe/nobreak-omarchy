@@ -1,0 +1,38 @@
+Oct 28 10:38:17 host kernel: usb 3-1: USB disconnect, device number 2
+Oct 28 10:38:17 host kernel: usb 3-1: new low-speed USB device number 5 using xhci_hcd
+Oct 28 10:38:17 host kernel: usb 3-1: New USB device found, idVendor=0001, idProduct=0000, bcdDevice= 1.00
+Oct 28 10:38:17 host kernel: usb 3-1: New USB device strings: Mfr=0, Product=1, SerialNumber=0
+Oct 28 10:38:17 host kernel: usb 3-1: Product: MEC0003
+Oct 28 10:38:17 host kernel: usbhid 3-1:1.0: can't add hid device: -71
+Oct 28 10:38:17 host kernel: usbhid 3-1:1.0: probe with driver usbhid failed with error -71
+Oct 28 10:38:17 host kernel: usb 3-1: USB disconnect, device number 5
+Oct 28 10:38:19 host kernel: usb 3-1: new low-speed USB device number 6 using xhci_hcd
+Oct 28 10:38:19 host kernel: usb 3-1: New USB device found, idVendor=0001, idProduct=0000, bcdDevice= 1.00
+Oct 28 10:38:19 host kernel: usb 3-1: New USB device strings: Mfr=0, Product=1, SerialNumber=0
+Oct 28 10:38:19 host kernel: usb 3-1: Product: MEC0003
+Oct 28 10:38:19 host kernel: hid-generic 0003:0001:0000.0007: hiddev96,hidraw0: USB HID v1.11 Device [MEC0003] on usb-0000:28:00.3-1/input0
+Oct 28 10:38:22 host kernel: usb 3-1: USB disconnect, device number 6
+Oct 28 10:38:22 host kernel: usb 3-1: new low-speed USB device number 7 using xhci_hcd
+Oct 28 10:38:23 host kernel: usb 3-1: device descriptor read/64, error -71
+Oct 28 10:38:23 host kernel: usb 3-1: New USB device found, idVendor=0001, idProduct=0000, bcdDevice= 1.00
+Oct 28 10:38:23 host kernel: usb 3-1: New USB device strings: Mfr=0, Product=1, SerialNumber=0
+Oct 28 10:38:23 host kernel: usb 3-1: Product: MEC0003
+Oct 28 10:38:23 host kernel: hid-generic 0003:0001:0000.0008: hiddev96,hidraw0: USB HID v1.11 Device [MEC0003] on usb-0000:28:00.3-1/input0
+Oct 28 10:38:26 host kernel: usb 3-1: USB disconnect, device number 7
+Oct 28 10:38:26 host kernel: usb 3-1: new low-speed USB device number 8 using xhci_hcd
+Oct 28 10:38:26 host kernel: usb 3-1: New USB device found, idVendor=0001, idProduct=0000, bcdDevice= 1.00
+Oct 28 10:38:26 host kernel: usb 3-1: New USB device strings: Mfr=0, Product=1, SerialNumber=0
+Oct 28 10:38:26 host kernel: usb 3-1: Product: MEC0003
+Oct 28 10:38:26 host kernel: hid-generic 0003:0001:0000.0009: hiddev96,hidraw0: USB HID v1.11 Device [MEC0003] on usb-0000:28:00.3-1/input0
+Oct 28 10:38:35 host kernel: usb 3-1: USB disconnect, device number 8
+Oct 28 10:38:35 host kernel: usb 3-1: new low-speed USB device number 9 using xhci_hcd
+Oct 28 10:38:35 host kernel: usb 3-1: New USB device found, idVendor=0001, idProduct=0000, bcdDevice= 1.00
+Oct 28 10:38:35 host kernel: usb 3-1: New USB device strings: Mfr=0, Product=1, SerialNumber=0
+Oct 28 10:38:35 host kernel: usb 3-1: Product: MEC0003
+Oct 28 10:38:35 host kernel: hid-generic 0003:0001:0000.000A: hiddev96,hidraw0: USB HID v1.11 Device [MEC0003] on usb-0000:28:00.3-1/input0
+Oct 28 10:38:53 host kernel: usb 3-1: USB disconnect, device number 9
+Oct 28 10:38:53 host kernel: usb 3-1: new low-speed USB device number 10 using xhci_hcd
+Oct 28 10:38:54 host kernel: usb 3-1: New USB device found, idVendor=0001, idProduct=0000, bcdDevice= 1.00
+Oct 28 10:38:54 host kernel: usb 3-1: New USB device strings: Mfr=0, Product=1, SerialNumber=0
+Oct 28 10:38:54 host kernel: usb 3-1: Product: MEC0003
+Oct 28 10:38:54 host kernel: hid-generic 0003:0001:0000.000B: hiddev96,hidraw0: USB HID v1.11 Device [MEC0003] on usb-0000:28:00.3-1/input0

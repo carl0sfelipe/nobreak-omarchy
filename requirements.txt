@@ -1,0 +1,7 @@
+# Dependências do núcleo do driver (canais string/setreport e serial)
+pyusb
+pyserial
+hidapi
+
+# Extras (opcionais — não são dependências duras dos modos sem --mqtt):
+# paho-mqtt    # ponte --mqtt / --daemon com Home Assistant

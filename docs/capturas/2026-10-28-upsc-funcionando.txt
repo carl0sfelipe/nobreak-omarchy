@@ -1,0 +1,34 @@
+battery.voltage: 2.22
+device.type: ups
+driver.debug: 0
+driver.flag.allow_killpower: 0
+driver.flag.noscanlangid: enabled
+driver.name: nutdrv_qx
+driver.parameter.langid_fix: 0x0409
+driver.parameter.pollfreq: 30
+driver.parameter.pollinterval: 2
+driver.parameter.port: auto
+driver.parameter.product: MEC0003
+driver.parameter.productid: 0000
+driver.parameter.protocol: q1
+driver.parameter.subdriver: hunnox
+driver.parameter.synchronous: auto
+driver.parameter.vendorid: 0001
+driver.state: quiet
+driver.version: 2.8.5
+driver.version.data: Q1 0.08
+driver.version.internal: 0.49
+driver.version.usb: libusb-1.0.30 (API: 0x0100010C)
+input.frequency: 50.0
+input.voltage: 230.9
+input.voltage.fault: 0.0
+output.voltage: 219.8
+ups.beeper.status: enabled
+ups.delay.shutdown: 30
+ups.delay.start: 180
+ups.load: 8
+ups.productid: 0000
+ups.status: OL
+ups.temperature: 27.0
+ups.type: online
+ups.vendorid: 0001

@@ -1,0 +1,12 @@
+12:20:15 in=232.4 out=219.8 load=8 batt=2.22 temp=32.0 OL
+12:20:20 in=232.4 out=219.8 load=8 batt=2.22 temp=32.0 OL
+12:20:25 in=232.4 out=219.8 load=8 batt=2.22 temp=32.0 OL
+12:20:30 in=231.2 out=220.1 load=8 batt=2.22 temp=28.0 OL
+12:20:35 in=231.2 out=220.1 load=8 batt=2.22 temp=28.0 OL
+12:20:40 in=231.2 out=220.1 load=8 batt=2.22 temp=28.0 OL
+12:20:45 in=231.2 out=220.1 load=8 batt=2.22 temp=28.0 OL
+12:20:50 in=231.2 out=220.1 load=8 batt=2.22 temp=28.0 OL
+12:20:55 in=231.2 out=220.1 load=8 batt=2.22 temp=28.0 OL
+12:21:00 in=232.4 out=220.1 load=8 batt=2.22 temp=31.0 OL
+12:21:05 in=232.4 out=220.1 load=8 batt=2.22 temp=31.0 OL
+12:21:10 in=232.4 out=220.1 load=8 batt=2.22 temp=31.0 OL

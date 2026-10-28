@@ -1,0 +1,198 @@
+{
+  "version": 1,
+  "target_sha256": "812462090980c8275858a58910a6a5c90af4bcb3c04090239ea3d35cb5ddbfad",
+  "provider": {
+    "id": "ghidra",
+    "name": "Ghidra",
+    "version": "12.1.4"
+  },
+  "analysis_profile_digest": "ae80ece8c83379eddabbdf379bbffca5da84c7df7fa7c159f45fa810468f85d9",
+  "layout": "address",
+  "layout_status": "address",
+  "limitations": [],
+  "functions": [
+    {
+      "address": "0x10e7a0",
+      "name": "FUN_0010e7a0",
+      "status": "written",
+      "relative_path": "functions/0x10e7a0.c",
+      "sha256": "9227c80c55303e4bc519479a9aa18420d23de6f0417d046d4889d591a6ea94a1",
+      "body": {
+        "available": true,
+        "ranges": [
+          {
+            "start": "0x10e7a0",
+            "end": "0x10ea4c"
+          },
+          {
+            "start": "0x10ea50",
+            "end": "0x10ea94"
+          },
+          {
+            "start": "0x10ea98",
+            "end": "0x10eaad"
+          },
+          {
+            "start": "0x10eab0",
+            "end": "0x10eb8e"
+          },
+          {
+            "start": "0x10eb90",
+            "end": "0x10ec84"
+          },
+          {
+            "start": "0x10ec88",
+            "end": "0x10ecd5"
+          },
+          {
+            "start": "0x10ece0",
+            "end": "0x10ed17"
+          },
+          {
+            "start": "0x10ed20",
+            "end": "0x10ed44"
+          },
+          {
+            "start": "0x10ed48",
+            "end": "0x10ed93"
+          },
+          {
+            "start": "0x10ed98",
+            "end": "0x10edb2"
+          },
+          {
+            "start": "0x10edb8",
+            "end": "0x10edf7"
+          },
+          {
+            "start": "0x10ee00",
+            "end": "0x10eec6"
+          },
+          {
+            "start": "0x10eed0",
+            "end": "0x10eefe"
+          },
+          {
+            "start": "0x10ef00",
+            "end": "0x10ef52"
+          },
+          {
+            "start": "0x10ef58",
+            "end": "0x10ef61"
+          },
+          {
+            "start": "0x10ef68",
+            "end": "0x10ef75"
+          },
+          {
+            "start": "0x10ef80",
+            "end": "0x10eff5"
+          },
+          {
+            "start": "0x10f000",
+            "end": "0x10f031"
+          },
+          {
+            "start": "0x10f038",
+            "end": "0x10f069"
+          },
+          {
+            "start": "0x10f070",
+            "end": "0x10f089"
+          },
+          {
+            "start": "0x10f090",
+            "end": "0x10f0b7"
+          },
+          {
+            "start": "0x10f0c0",
+            "end": "0x10f0dc"
+          },
+          {
+            "start": "0x10f0e0",
+            "end": "0x10f0fc"
+          },
+          {
+            "start": "0x10f100",
+            "end": "0x10f110"
+          },
+          {
+            "start": "0x10f118",
+            "end": "0x10f23f"
+          }
+        ],
+        "non_contiguous": true
+      },
+      "limitations": [
+        "The session serves operations only after Ghidra reports default auto-analysis complete; incomplete analysis does not expose partial results.",
+        "The imported Program and temporary project are ephemeral and deleted on close. Annotation operations edit session database metadata; original executable bytes are never written.",
+        "Cancelling an active Ghidra request terminates its ephemeral database and discards session annotations. The selected target remains open; the next provider query imports the original artifact again.",
+        "Default-space addresses use lowercase 0x-prefixed hexadecimal; other address spaces use <percent-encoded-space>:0x<hex>.",
+        "Ghidra Listing reports a terminal call at 0x10f21f to 0x138e80 FUN_00138e80 (external=false, thunk=false, hasNoReturn=true); fallthrough is excluded by Ghidra's flow model. This records Ghidra's FunctionManager flag, not an independent verification that the callee cannot return.",
+        "Pseudocode is Ghidra decompiler output, not original source and not text-equivalent to Hopper output.",
+        "External functions and functions without an analyzable body return null; other decompiler failures remain explicit."
+      ]
+    },
+    {
+      "address": "0x10f240",
+      "name": "FUN_0010f240",
+      "status": "written",
+      "relative_path": "functions/0x10f240.c",
+      "sha256": "05941955591812216c00f8989d9eacc0846320f6662ea2b2195a2979077c4cc2",
+      "body": {
+        "available": true,
+        "ranges": [
+          {
+            "start": "0x10f240",
+            "end": "0x10f2dd"
+          },
+          {
+            "start": "0x10f2e0",
+            "end": "0x10f3b5"
+          },
+          {
+            "start": "0x10f3c0",
+            "end": "0x10f485"
+          },
+          {
+            "start": "0x10f490",
+            "end": "0x10f4d3"
+          },
+          {
+            "start": "0x10f4d8",
+            "end": "0x10f50a"
+          },
+          {
+            "start": "0x10f510",
+            "end": "0x10f585"
+          },
+          {
+            "start": "0x10f590",
+            "end": "0x10f5d8"
+          },
+          {
+            "start": "0x10f5e0",
+            "end": "0x10f618"
+          },
+          {
+            "start": "0x10f620",
+            "end": "0x10f649"
+          },
+          {
+            "start": "0x10f650",
+            "end": "0x10f735"
+          }
+        ],
+        "non_contiguous": true
+      },
+      "limitations": [
+        "The session serves operations only after Ghidra reports default auto-analysis complete; incomplete analysis does not expose partial results.",
+        "The imported Program and temporary project are ephemeral and deleted on close. Annotation operations edit session database metadata; original executable bytes are never written.",
+        "Cancelling an active Ghidra request terminates its ephemeral database and discards session annotations. The selected target remains open; the next provider query imports the original artifact again.",
+        "Default-space addresses use lowercase 0x-prefixed hexadecimal; other address spaces use <percent-encoded-space>:0x<hex>.",
+        "Pseudocode is Ghidra decompiler output, not original source and not text-equivalent to Hopper output.",
+        "External functions and functions without an analyzable body return null; other decompiler failures remain explicit."
+      ]
+    }
+  ]
+}
