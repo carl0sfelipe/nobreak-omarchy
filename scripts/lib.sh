@@ -1,3 +1,4 @@
+# shellcheck shell=bash disable=SC2034  # sourced by install.sh/uninstall.sh; vars are used there
 # =============================================================================
 # scripts/lib.sh — shared library of the nobreak-omarchy kit
 #
@@ -228,7 +229,7 @@ usb_cycle_authorized() {
             return 1
         fi
         # Wait for the interfaces to come back (logical re-enumeration).
-        for i in $(seq 1 15); do
+        for _ in $(seq 1 15); do
             if ls -d "${sys}:"* >/dev/null 2>&1; then
                 ok "interfaces re-enumerated at ${sys}:*"
                 break
